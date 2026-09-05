@@ -1,14 +1,18 @@
 /**
  * Temporary measurement route — delete once the question below is settled.
  *
- * Question: on a host YouTube distrusts, is a visitor identity effectively
- * single-use? The deployed diagnostics showed VISIONOS answering with 23 formats
- * on the first ask and LOGIN_REQUIRED on every ask after it, which is what a
- * burned identity looks like. If that is what is happening, asking four clients
- * in parallel under one shared id wastes three of the four.
+ * Settled already, by the identity probes this replaced: rotating the visitor id
+ * per request changes nothing from bom1 (22 consecutive `LOGIN_REQUIRED / Sign in
+ * to confirm you're not a bot`, minted ids, 4/4 mints succeeding). And the browser
+ * cannot take over the handshake: InnerTube answers 403 to any request carrying a
+ * foreign `Origin`, which is the one header a browser will not let you forge.
  *
- * Statuses, counts and identity *origins* only. No media URLs, no cookie, no
- * visitor value.
+ * So the only remaining lever is somebody else's address. This sweeps the public
+ * resolver networks — Invidious, Piped, cobalt — from the deployed function, using
+ * each project's own live instance list rather than a list that rots in this file,
+ * and reports which of them can still hand back a YouTube stream URL.
+ *
+ * Hosts and counts only; no stream URLs in the output.
  */
 import { NextResponse } from 'next/server';
 import { fetchWithTimeout } from '@/lib/http';
@@ -17,208 +21,185 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const PLAYER = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
-const VISITOR = 'https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false';
-const ORIGIN = 'https://www.youtube.com';
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
-interface Probe {
-  id: number;
-  name: string;
-  ua: string;
-  ctx: Record<string, unknown>;
+interface Trial {
+  host: string;
+  code: string;
+  streams?: number;
+  note?: string;
 }
 
-const CLIENTS: Probe[] = [
-  {
-    id: 101,
-    name: 'VISIONOS',
-    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
-    ctx: {
-      clientName: 'VISIONOS',
-      clientVersion: '1.02',
-      deviceMake: 'Apple',
-      deviceModel: 'RealityDevice17,1',
-      osName: 'visionOS',
-      osVersion: '26.5.23O471',
-      hl: 'en',
-      gl: 'US',
-      utcOffsetMinutes: 0,
-    },
-  },
-  {
-    id: 28,
-    name: 'ANDROID_VR',
-    ua: 'com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
-    ctx: {
-      clientName: 'ANDROID_VR',
-      clientVersion: '1.62.27',
-      deviceMake: 'Oculus',
-      deviceModel: 'Quest 3',
-      androidSdkVersion: 32,
-      osName: 'Android',
-      osVersion: '12L',
-      hl: 'en',
-      gl: 'US',
-      utcOffsetMinutes: 0,
-    },
-  },
-  {
-    id: 5,
-    name: 'IOS',
-    ua: 'com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
-    ctx: {
-      clientName: 'IOS',
-      clientVersion: '21.26.4',
-      deviceMake: 'Apple',
-      deviceModel: 'iPhone16,2',
-      osName: 'iPhone',
-      osVersion: '18.3.2.22D82',
-      hl: 'en',
-      gl: 'US',
-      utcOffsetMinutes: 0,
-    },
-  },
-  {
-    id: 3,
-    name: 'ANDROID',
-    ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; en_US; Pixel 8) gzip',
-    ctx: {
-      clientName: 'ANDROID',
-      clientVersion: '20.10.38',
-      deviceMake: 'Google',
-      deviceModel: 'Pixel 8',
-      androidSdkVersion: 34,
-      osName: 'Android',
-      osVersion: '14',
-      hl: 'en',
-      gl: 'US',
-      utcOffsetMinutes: 0,
-    },
-  },
-];
-
-/** A visitor id straight from YouTube, or `undefined` when the mint is refused. */
-async function mint(): Promise<string | undefined> {
+async function json<T>(url: string, timeoutMs = 12_000): Promise<T | undefined> {
   try {
-    const response = await fetchWithTimeout(VISITOR, {
-      method: 'POST',
-      timeoutMs: 10_000,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-YouTube-Client-Name': '1',
-        'X-YouTube-Client-Version': '2.20240726.00.00',
-      },
-      body: JSON.stringify({
-        context: { client: { clientName: 'WEB', clientVersion: '2.20240726.00.00', hl: 'en', gl: 'US' } },
-      }),
-    });
+    const response = await fetchWithTimeout(url, { timeoutMs, headers: { 'User-Agent': UA, Accept: 'application/json' } });
     if (!response.ok) return undefined;
-    const json = (await response.json()) as { responseContext?: { visitorData?: string } };
-    return json.responseContext?.visitorData;
+    return (await response.json()) as T;
   } catch {
     return undefined;
   }
 }
 
-interface Answer {
-  client: string;
-  status: string;
-  formats: number;
-  reason?: string;
+/** Run `work` over `items` with a small concurrency cap so a sweep fits the budget. */
+async function pool<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      out[index] = await work(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return out;
 }
 
-async function ask(client: Probe, videoId: string, visitor: string | undefined): Promise<Answer> {
-  const body = {
-    videoId,
-    context: {
-      client: visitor ? { ...client.ctx, visitorData: visitor } : client.ctx,
-      user: { lockedSafetyMode: false },
-      request: { useSsl: true, internalExperimentFlags: [] },
-    },
-    playbackContext: { contentPlaybackContext: { html5Preference: 'HTML5_PREF_WANTS' } },
-    contentCheckOk: true,
-    racyCheckOk: true,
-  };
-
+async function attempt(host: string, run: () => Promise<Trial>): Promise<Trial> {
   try {
-    const response = await fetchWithTimeout(PLAYER, {
-      method: 'POST',
-      timeoutMs: 20_000,
-      body: JSON.stringify(body),
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': client.ua,
-        'X-YouTube-Client-Name': String(client.id),
-        'X-YouTube-Client-Version': String(client.ctx.clientVersion),
-        Origin: ORIGIN,
-        Accept: '*/*',
-        ...(visitor ? { 'X-Goog-Visitor-Id': visitor } : {}),
-      },
-    });
-    if (!response.ok) {
-      return { client: client.name, status: `HTTP_${response.status}`, formats: 0 };
-    }
-    const json = (await response.json()) as {
-      playabilityStatus?: { status?: string; reason?: string };
-      streamingData?: { formats?: unknown[]; adaptiveFormats?: unknown[] };
-    };
-    const formats =
-      (json.streamingData?.formats?.length ?? 0) + (json.streamingData?.adaptiveFormats?.length ?? 0);
-    return {
-      client: client.name,
-      status: json.playabilityStatus?.status ?? 'NO_STATUS',
-      formats,
-      reason: json.playabilityStatus?.reason?.slice(0, 70),
-    };
+    return await run();
   } catch (error) {
-    return { client: client.name, status: `THREW_${(error as Error).name}`, formats: 0 };
+    return { host, code: `THREW_${(error as Error).name}` };
   }
 }
 
-const VISIONOS = CLIENTS[0];
+/* ------------------------------- Invidious ------------------------------ */
+
+interface InvidiousEntry {
+  0: string;
+  1: { type?: string; uri?: string; api?: boolean | null };
+}
+
+async function invidious(videoId: string): Promise<Trial[]> {
+  const list = await json<InvidiousEntry[]>('https://api.invidious.io/instances.json');
+  if (!list) return [{ host: 'api.invidious.io', code: 'INSTANCE_LIST_UNREACHABLE' }];
+
+  const uris = list
+    .filter((entry) => entry[1]?.type === 'https' && entry[1]?.api !== false && entry[1]?.uri)
+    .map((entry) => entry[1].uri as string)
+    .slice(0, 24);
+  if (!uris.length) return [{ host: 'api.invidious.io', code: 'NO_API_INSTANCES_LISTED' }];
+
+  return pool(uris, 8, (uri) =>
+    attempt(uri, async () => {
+      const response = await fetchWithTimeout(`${uri}/api/v1/videos/${videoId}`, {
+        timeoutMs: 12_000,
+        headers: { 'User-Agent': UA, Accept: 'application/json' },
+      });
+      if (!response.ok) return { host: uri, code: `HTTP_${response.status}` };
+      const body = (await response.json()) as {
+        formatStreams?: unknown[];
+        adaptiveFormats?: unknown[];
+        error?: string;
+      };
+      const streams = (body.formatStreams?.length ?? 0) + (body.adaptiveFormats?.length ?? 0);
+      return { host: uri, code: 'OK', streams, note: body.error?.slice(0, 60) };
+    })
+  );
+}
+
+/* --------------------------------- Piped -------------------------------- */
+
+async function piped(videoId: string): Promise<Trial[]> {
+  const list =
+    (await json<Array<{ name?: string; api_url?: string }>>('https://piped-instances.kavin.rocks/')) ??
+    (await json<Array<{ name?: string; api_url?: string }>>('https://raw.githubusercontent.com/TeamPiped/documentation/main/content/docs/public-instances/index.md'));
+  const apis = (list ?? [])
+    .map((entry) => entry.api_url)
+    .filter((url): url is string => Boolean(url?.startsWith('http')))
+    .slice(0, 20);
+  if (!apis.length) return [{ host: 'piped-instances.kavin.rocks', code: 'INSTANCE_LIST_UNREACHABLE' }];
+
+  return pool(apis, 8, (api) =>
+    attempt(api, async () => {
+      const response = await fetchWithTimeout(`${api}/streams/${videoId}`, {
+        timeoutMs: 12_000,
+        headers: { 'User-Agent': UA, Accept: 'application/json' },
+      });
+      if (!response.ok) return { host: api, code: `HTTP_${response.status}` };
+      const body = (await response.json()) as {
+        videoStreams?: unknown[];
+        audioStreams?: unknown[];
+        error?: string;
+        message?: string;
+      };
+      const streams = (body.videoStreams?.length ?? 0) + (body.audioStreams?.length ?? 0);
+      return { host: api, code: 'OK', streams, note: (body.error ?? body.message)?.slice(0, 60) };
+    })
+  );
+}
+
+/* --------------------------------- cobalt -------------------------------- */
+
+async function cobalt(videoId: string): Promise<Trial[]> {
+  const list = await json<Array<{ api?: string; protocol?: string; version?: string }>>(
+    'https://instances.cobalt.best/api/instances.json'
+  );
+  const apis = (list ?? [])
+    .map((entry) => (entry.api ? `${entry.protocol === 'http' ? 'http' : 'https'}://${entry.api}` : undefined))
+    .filter((url): url is string => Boolean(url))
+    .slice(0, 20);
+  if (!apis.length) return [{ host: 'instances.cobalt.best', code: 'INSTANCE_LIST_UNREACHABLE' }];
+
+  return pool(apis, 8, (api) =>
+    attempt(api, async () => {
+      const response = await fetchWithTimeout(api, {
+        method: 'POST',
+        timeoutMs: 15_000,
+        headers: { 'User-Agent': UA, Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          videoQuality: '1080',
+          filenameStyle: 'basic',
+        }),
+      });
+      const text = await response.text();
+      if (!text.trimStart().startsWith('{')) {
+        return { host: api, code: `HTTP_${response.status}`, note: text.slice(0, 50) };
+      }
+      const body = JSON.parse(text) as {
+        status?: string;
+        url?: string;
+        error?: { code?: string };
+      };
+      return {
+        host: api,
+        code: `HTTP_${response.status}`,
+        streams: body.url ? 1 : 0,
+        note: `${body.status ?? '-'}${body.error?.code ? ` ${body.error.code}` : ''}`.slice(0, 60),
+      };
+    })
+  );
+}
 
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const videoId = params.get('id') || 'dQw4w9WgXcQ';
-  const mode = params.get('m') || 'shared';
+  const mode = params.get('m') || 'invidious';
   const started = Date.now();
-  const out: Record<string, unknown> = { mode, videoId, region: process.env.VERCEL_REGION ?? 'local' };
 
-  if (mode === 'mint') {
-    // Does this address get real ids at all, and does it keep getting them?
-    const mints: string[] = [];
-    for (let i = 0; i < 4; i += 1) {
-      const id = await mint();
-      mints.push(id ? `ok/len${id.length}` : 'refused');
-    }
-    out.mints = mints;
-  } else if (mode === 'shared') {
-    // Today's behaviour: one identity, four clients at once.
-    const visitor = await mint();
-    out.visitor = visitor ? 'minted' : 'refused';
-    out.answers = await Promise.all(CLIENTS.map((client) => ask(client, videoId, visitor)));
-  } else if (mode === 'fresh') {
-    // One identity per client, asked one at a time.
-    const answers: Answer[] = [];
-    for (const client of CLIENTS) {
-      const visitor = await mint();
-      const answer = await ask(client, videoId, visitor);
-      answers.push({ ...answer, client: `${answer.client}${visitor ? '' : '(no-id)'}` });
-    }
-    out.answers = answers;
-  } else if (mode === 'reuse' || mode === 'rotate') {
-    // Is one identity good for one ask, or for many? Same client either way.
-    const shared = mode === 'reuse' ? await mint() : undefined;
-    const answers: Answer[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      const visitor = mode === 'reuse' ? shared : await mint();
-      answers.push({ ...(await ask(VISIONOS, videoId, visitor)), client: `#${i + 1}${visitor ? '' : '(no-id)'}` });
-    }
-    out.answers = answers;
-  } else {
-    out.error = 'm must be one of: mint, shared, fresh, reuse, rotate';
+  const trials =
+    mode === 'invidious'
+      ? await invidious(videoId)
+      : mode === 'piped'
+        ? await piped(videoId)
+        : mode === 'cobalt'
+          ? await cobalt(videoId)
+          : undefined;
+
+  if (!trials) {
+    return NextResponse.json({ error: 'm must be one of: invidious, piped, cobalt' }, { status: 400 });
   }
 
-  out.ms = Date.now() - started;
-  return NextResponse.json(out, { headers: { 'Cache-Control': 'no-store' } });
+  return NextResponse.json(
+    {
+      mode,
+      videoId,
+      region: process.env.VERCEL_REGION ?? 'local',
+      ms: Date.now() - started,
+      working: trials.filter((trial) => (trial.streams ?? 0) > 0).map((trial) => trial.host),
+      trials,
+    },
+    { headers: { 'Cache-Control': 'no-store' } }
+  );
 }
