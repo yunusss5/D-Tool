@@ -630,10 +630,14 @@ async function oneRound(videoId: string): Promise<InnerTubeResult> {
 export async function innertubeInfo(videoId: string): Promise<InnerTubeResult> {
   let last: InnerTubeResult = {};
 
-  for (let round = 0; round < 2; round += 1) {
+  // Three identities, backing off between them. A challenge arrives in bursts
+  // rather than as a steady state, so the second and third ask land after it has
+  // often already passed; the delays are what make the extra rounds worth having,
+  // and they stay well inside the request budget even when all of them fail.
+  for (let round = 0; round < 3; round += 1) {
     if (round > 0) {
       rotateVisitor();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, round === 1 ? 250 : 750));
     }
     last = await oneRound(videoId);
     if (last.info || last.fatal) return last;
