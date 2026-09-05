@@ -219,6 +219,48 @@ async function oembed(videoId: string): Promise<OEmbed | undefined> {
   }
 }
 
+/**
+ * Can *this* host reach the resolver at all?
+ *
+ * Asked with a nonsense job id on purpose: the progress endpoint needs no key and
+ * starts no work, so the answer distinguishes the three cases that matter — JSON
+ * back means reachable, HTML back means a bot wall in front of it, and a thrown
+ * error means the network never got there. Reported by `GET /api/youtube`,
+ * alongside what InnerTube says, because when both are refused it is the address
+ * they have in common.
+ */
+export async function apiDiagnostics(): Promise<Record<string, unknown>> {
+  const started = Date.now();
+  try {
+    const response = await fetchWithTimeout(`https://${HOST}/api/progress?id=reachability`, {
+      timeoutMs: 15_000,
+    });
+    const body = await response.text();
+    let shape = 'other';
+    try {
+      JSON.parse(body);
+      shape = 'json';
+    } catch {
+      shape = /^\s*</.test(body) ? 'html' : 'text';
+    }
+    return {
+      host: HOST,
+      keyed: Boolean(KEY),
+      status: response.status,
+      answered: shape,
+      body: body.slice(0, 120).replace(/\s+/g, ' ').trim(),
+      ms: Date.now() - started,
+    };
+  } catch (error) {
+    return {
+      host: HOST,
+      keyed: Boolean(KEY),
+      error: error instanceof Error ? error.message : String(error),
+      ms: Date.now() - started,
+    };
+  }
+}
+
 /** A listing built entirely from the resolver's fixed menu. */
 export async function apiYouTubeInfo(videoId: string): Promise<MediaInfo> {
   const meta = await oembed(videoId);

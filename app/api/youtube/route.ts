@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createPlatformHandler } from '@/lib/platform-route';
 import { clientKey, rateLimit } from '@/lib/rate-limit';
 import { innertubeDiagnostics } from '@/lib/youtube-innertube';
+import { apiDiagnostics } from '@/lib/youtube-api';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,7 +20,9 @@ const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
  * difference. This reports the playability status each client returned and
  * whether its URLs read past the proof-of-origin wall, which is what turns
  * "YouTube is challenging this server" into something actionable. It exposes
- * statuses and counts only — no media URLs, no cookie, no visitor id.
+ * statuses and counts only — no media URLs, no cookie, no visitor id. The
+ * `resolver` block reports the same question for the third-party fallback, since
+ * when both refuse the host it is the address they have in common.
  */
 export async function GET(request: NextRequest) {
   const limit = rateLimit(`youtube-status:${clientKey(request)}`, 6, 60_000);
@@ -35,7 +38,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Pass an 11-character YouTube video id.' }, { status: 400 });
   }
 
-  return NextResponse.json(await innertubeDiagnostics(id), {
-    headers: { 'Cache-Control': 'no-store' },
-  });
+  const [innertube, resolver] = await Promise.all([innertubeDiagnostics(id), apiDiagnostics()]);
+  return NextResponse.json(
+    { ...innertube, resolver },
+    { headers: { 'Cache-Control': 'no-store' } }
+  );
 }
