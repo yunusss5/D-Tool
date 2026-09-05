@@ -7,6 +7,11 @@
  * ffmpeg mux the video + audio streams back together on the way to the client.
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { chmod, copyFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { ExtractError } from './media';
 
 export interface YtDlpFormat {
@@ -163,17 +168,71 @@ export async function ytDlpVersion(): Promise<string | null> {
 
 let ffmpegLookup: Promise<string | null> | undefined;
 
+/** Does this path actually run? */
+async function ffmpegRuns(file: string): Promise<boolean> {
+  try {
+    const result = await run(file, ['-hide_banner', '-version'], 20_000);
+    return result.code === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The `ffmpeg-static` package, when it is installed.
+ *
+ * It is an optional dependency precisely because it is a ~78 MB platform binary:
+ * on a serverless host it is the only way to get ffmpeg at all, and on a laptop
+ * that already has ffmpeg on PATH it is dead weight. Resolving it by path rather
+ * than by `require` keeps the bundler out of the decision entirely.
+ */
+function bundledCandidates(): string[] {
+  const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  return [
+    join(process.cwd(), 'node_modules', 'ffmpeg-static', exe),
+    // Vercel runs the function from a nested directory when the project is a
+    // monorepo package; the traced copy then sits one level up.
+    join(process.cwd(), '..', 'node_modules', 'ffmpeg-static', exe),
+  ];
+}
+
+/**
+ * A traced copy can arrive without its executable bit (zip round-trips lose it,
+ * and /var/task is read-only so it cannot be restored in place). Staging the
+ * binary in the writable temp directory costs one copy per cold start.
+ */
+async function stageExecutable(source: string): Promise<string | null> {
+  try {
+    await chmod(source, 0o755);
+    if (await ffmpegRuns(source)) return source;
+  } catch {
+    /* read-only filesystem: fall through to the temp copy */
+  }
+
+  const staged = join(tmpdir(), basename(source));
+  try {
+    if (!existsSync(staged)) await copyFile(source, staged);
+    await chmod(staged, 0o755);
+  } catch {
+    return null;
+  }
+  return (await ffmpegRuns(staged)) ? staged : null;
+}
+
 /** Path to a usable ffmpeg, or null. Needed to mux video-only + audio-only. */
 export function resolveFfmpeg(): Promise<string | null> {
   ffmpegLookup ??= (async () => {
     for (const file of [process.env.FFMPEG_PATH?.trim(), 'ffmpeg'].filter(Boolean) as string[]) {
-      try {
-        const result = await run(file, ['-hide_banner', '-version'], 20_000);
-        if (result.code === 0) return file;
-      } catch {
-        /* try the next candidate */
-      }
+      if (await ffmpegRuns(file)) return file;
     }
+
+    for (const candidate of bundledCandidates()) {
+      if (!existsSync(candidate)) continue;
+      if (await ffmpegRuns(candidate)) return candidate;
+      const staged = await stageExecutable(candidate);
+      if (staged) return staged;
+    }
+
     return null;
   })();
   return ffmpegLookup;
@@ -284,10 +343,18 @@ export interface PipedProcess {
  * Mux a video-only and an audio-only stream into a fragmented MP4/WebM on
  * stdout. Fragmented output is what makes it streamable: no moov atom has to be
  * written at the end, so bytes reach the browser immediately.
+ *
+ * Neither input is a URL, and that is deliberate. googlevideo hands a single
+ * connection a short fast burst and then paces it at roughly playback speed
+ * (~240 KiB/s measured on a 720p stream), so letting ffmpeg open the streams
+ * itself made a 26 MB download take minutes. The caller fetches both through a
+ * ranged-window reader instead — an order of magnitude faster — and passes the
+ * video in on stdin. The audio comes from a file so that ffmpeg can seek it,
+ * which is what lets it line the two streams up.
  */
 export async function muxToStdout(
-  videoUrl: string,
-  audioUrl: string,
+  video: Readable,
+  audioFile: string,
   container: 'mp4' | 'webm'
 ): Promise<PipedProcess> {
   const ffmpeg = await resolveFfmpeg();
@@ -298,17 +365,14 @@ export async function muxToStdout(
     );
   }
 
-  const reconnect = ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5'];
   const args = [
     '-hide_banner',
     '-loglevel',
     'error',
-    ...reconnect,
     '-i',
-    videoUrl,
-    ...reconnect,
+    'pipe:0',
     '-i',
-    audioUrl,
+    audioFile,
     '-map',
     '0:v:0',
     '-map',
@@ -324,12 +388,23 @@ export async function muxToStdout(
   }
   args.push('pipe:1');
 
-  return spawnPiped(ffmpeg, args);
+  return spawnPiped(ffmpeg, args, video);
 }
 
 /** Spawn a child and hand back its stdout plus a completion promise. */
-export function spawnPiped(file: string, args: string[]): PipedProcess {
-  const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+export function spawnPiped(file: string, args: string[], stdin?: Readable): PipedProcess {
+  // Two spawn calls rather than a computed stdio array: it keeps the tuple
+  // literal, which is what tells TypeScript stdout and stderr are really there.
+  const child = stdin
+    ? spawn(file, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    : spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+
+  if (stdin && child.stdin) {
+    // ffmpeg closes stdin the moment it has what it needs, which surfaces here
+    // as EPIPE. That is a normal end to the transfer, not a failure.
+    child.stdin.on('error', () => stdin.destroy());
+    stdin.pipe(child.stdin);
+  }
 
   let stderr = '';
   child.stderr.on('data', (chunk: Buffer) => {
@@ -348,6 +423,7 @@ export function spawnPiped(file: string, args: string[]): PipedProcess {
     stdout: child.stdout,
     done,
     kill: () => {
+      stdin?.destroy();
       if (!child.killed) child.kill();
     },
   };

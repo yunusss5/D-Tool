@@ -2,19 +2,25 @@ import { detectPlatform, ExtractError, type MediaInfo, type Platform } from '@/l
 import { extractYouTube } from '@/lib/extractors/youtube';
 import { extractInstagram } from '@/lib/extractors/instagram';
 import { extractPinterest } from '@/lib/extractors/pinterest';
+import { extractTikTok } from '@/lib/extractors/tiktok';
+import { extractTwitter } from '@/lib/extractors/twitter';
 
-export { extractYouTube, extractInstagram, extractPinterest };
+export { extractYouTube, extractInstagram, extractPinterest, extractTikTok, extractTwitter };
 
 const SUPPORTED: Record<Exclude<Platform, 'unknown'>, (url: string) => Promise<MediaInfo>> = {
   youtube: extractYouTube,
   instagram: extractInstagram,
   pinterest: extractPinterest,
+  tiktok: extractTikTok,
+  twitter: extractTwitter,
 };
 
 const PLATFORM_NAMES: Record<Exclude<Platform, 'unknown'>, string> = {
   youtube: 'a YouTube',
   instagram: 'an Instagram',
   pinterest: 'a Pinterest',
+  tiktok: 'a TikTok',
+  twitter: 'an X (Twitter)',
 };
 
 /** Normalise loose user input into something URL-shaped. */
@@ -35,7 +41,7 @@ export async function extractMedia(rawInput: string, expected?: Platform): Promi
   const platform = detectPlatform(url);
   if (platform === 'unknown') {
     throw new ExtractError(
-      'Only YouTube, Instagram and Pinterest links are supported right now.',
+      'Only YouTube, Instagram, Pinterest, TikTok and X (Twitter) links are supported right now.',
       400
     );
   }

@@ -36,7 +36,7 @@ export default function TermsOfServicePage() {
                 Description of Service
               </h2>
               <p className="text-gray-600 dark:text-gray-400">
-                D Tool is a web-based tool that allows users to download publicly available content from YouTube, Instagram, and Pinterest. The Service acts as an intermediary between users and the content platforms.
+                D Tool is a web-based tool that allows users to download publicly available content from YouTube, Instagram, Pinterest, TikTok and X (Twitter). The Service acts as an intermediary between users and the content platforms.
               </p>
             </section>
 

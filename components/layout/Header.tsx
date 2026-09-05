@@ -10,6 +10,8 @@ const navigation = [
   { name: 'YouTube', href: '/youtube-downloader' },
   { name: 'Instagram', href: '/instagram-downloader' },
   { name: 'Pinterest', href: '/pinterest-downloader' },
+  { name: 'TikTok', href: '/tiktok-downloader' },
+  { name: 'X', href: '/x-downloader' },
   { name: 'How to Use', href: '/how-to-use' },
   { name: 'FAQ', href: '/faq' },
 ];
@@ -45,13 +47,13 @@ export function Header() {
             </span>
           </Link>
 
-          {/* Desktop Navigation */}
-          <div className="hidden md:flex items-center gap-1">
+          {/* Desktop Navigation — eight links need lg to sit on one row */}
+          <div className="hidden lg:flex items-center gap-1">
             {navigation.map((item) => (
               <Link
                 key={item.name}
                 href={item.href}
-                className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-brand-600 dark:hover:text-brand-400 transition-colors rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-brand-600 dark:hover:text-brand-400 transition-colors rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
               >
                 {item.name}
               </Link>
@@ -71,7 +73,7 @@ export function Header() {
 
             {/* Mobile menu button */}
             <button
-              className="md:hidden p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              className="lg:hidden p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               aria-label="Toggle menu"
             >
@@ -82,7 +84,7 @@ export function Header() {
 
         {/* Mobile Navigation */}
         {mobileMenuOpen && (
-          <div className="md:hidden py-4 border-t border-gray-200 dark:border-gray-800 animate-fade-in">
+          <div className="lg:hidden py-4 border-t border-gray-200 dark:border-gray-800 animate-fade-in">
             <div className="flex flex-col gap-1">
               {navigation.map((item) => (
                 <Link

@@ -1,7 +1,21 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { Search, Download, Youtube, Instagram, Image, Loader2, X, Copy, Check, AlertCircle, Music, Film } from 'lucide-react';
+import {
+  Search,
+  Download,
+  Youtube,
+  Instagram,
+  Image,
+  Loader2,
+  X,
+  Check,
+  AlertCircle,
+  Music,
+  Music2,
+  Film,
+  Twitter,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { FormatOption, MediaInfo, Platform } from '@/lib/media';
 
@@ -9,6 +23,8 @@ const platformIcons = {
   youtube: Youtube,
   instagram: Instagram,
   pinterest: Image,
+  tiktok: Music2,
+  twitter: Twitter,
   unknown: Download,
 };
 
@@ -16,8 +32,12 @@ const platformNames = {
   youtube: 'YouTube',
   instagram: 'Instagram',
   pinterest: 'Pinterest',
+  tiktok: 'TikTok',
+  twitter: 'X (Twitter)',
   unknown: 'Unknown',
 };
+
+const ALL_PLATFORMS = 'YouTube, Instagram, Pinterest, TikTok or X';
 
 /**
  * Some extractors already name the container in the quality string
@@ -55,6 +75,8 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
     if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) return 'youtube';
     if (lowerUrl.includes('instagram.com') || lowerUrl.includes('instagr.am')) return 'instagram';
     if (lowerUrl.includes('pinterest.com') || lowerUrl.includes('pin.it')) return 'pinterest';
+    if (lowerUrl.includes('tiktok.com')) return 'tiktok';
+    if (/\b(?:twitter\.com|x\.com|t\.co)\b/.test(lowerUrl)) return 'twitter';
     return 'unknown';
   }, []);
 
@@ -93,7 +115,7 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
       setError(
         locked
           ? `Please enter a valid ${platformNames[locked]} URL`
-          : 'Please enter a valid YouTube, Instagram, or Pinterest URL'
+          : `Please enter a valid ${ALL_PLATFORMS} link`
       );
       return;
     }
@@ -250,7 +272,7 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
                 placeholder={
                   locked
                     ? `Paste your ${platformNames[locked]} link here...`
-                    : 'Paste YouTube, Instagram, or Pinterest link here...'
+                    : `Paste a ${ALL_PLATFORMS} link here...`
                 }
                 className={cn(
                   'w-full pl-12 pr-24 py-4 rounded-xl',
@@ -260,6 +282,8 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
                   detectedPlatform === 'youtube' && 'border-red-300 dark:border-red-800',
                   detectedPlatform === 'instagram' && 'border-pink-300 dark:border-pink-800',
                   detectedPlatform === 'pinterest' && 'border-red-300 dark:border-red-800',
+                  detectedPlatform === 'tiktok' && 'border-cyan-300 dark:border-cyan-800',
+                  detectedPlatform === 'twitter' && 'border-sky-300 dark:border-sky-800',
                   detectedPlatform === 'unknown' && url && 'border-red-300 dark:border-red-700',
                   detectedPlatform === 'unknown' && !url && 'border-gray-200 dark:border-gray-700'
                 )}
@@ -293,7 +317,9 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
                   'px-2 py-0.5 rounded-full text-xs font-medium',
                   detectedPlatform === 'youtube' && 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400',
                   detectedPlatform === 'instagram' && 'bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400',
-                  detectedPlatform === 'pinterest' && 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'
+                  detectedPlatform === 'pinterest' && 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400',
+                  detectedPlatform === 'tiktok' && 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-400',
+                  detectedPlatform === 'twitter' && 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400'
                 )}>
                   {platformNames[detectedPlatform]}
                 </span>
@@ -458,6 +484,14 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
             <span className="flex items-center gap-2">
               <Image className="w-4 h-4 text-pinterest" />
               Pinterest
+            </span>
+            <span className="flex items-center gap-2">
+              <Music2 className="w-4 h-4 text-tiktok" />
+              TikTok
+            </span>
+            <span className="flex items-center gap-2">
+              <Twitter className="w-4 h-4 text-twitter" />
+              X (Twitter)
             </span>
           </div>
         )}

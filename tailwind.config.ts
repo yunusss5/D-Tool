@@ -26,6 +26,8 @@ const config: Config = {
         youtube: '#FF0000',
         instagram: '#E4405F',
         pinterest: '#BD081C',
+        tiktok: '#00F2EA',
+        twitter: '#1D9BF0',
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],

@@ -1,7 +1,5 @@
-'use client';
-
 import Link from 'next/link';
-import { Youtube, Instagram, Image } from 'lucide-react';
+import { Youtube, Instagram, Image, Music2, Twitter } from 'lucide-react';
 
 const platforms = [
   {
@@ -31,13 +29,31 @@ const platforms = [
     gradient: 'from-red-600/10 to-red-600/5',
     borderColor: 'hover:border-pinterest/30',
   },
+  {
+    name: 'TikTok',
+    description: 'Videos, Photos, No Watermark',
+    icon: Music2,
+    color: 'hover:text-tiktok',
+    href: '/tiktok-downloader',
+    gradient: 'from-cyan-500/10 to-cyan-500/5',
+    borderColor: 'hover:border-tiktok/30',
+  },
+  {
+    name: 'X (Twitter)',
+    description: 'Videos, GIFs, Photos',
+    icon: Twitter,
+    color: 'hover:text-twitter',
+    href: '/x-downloader',
+    gradient: 'from-sky-500/10 to-sky-500/5',
+    borderColor: 'hover:border-twitter/30',
+  },
 ];
 
 export function PlatformCards() {
   return (
     <section className="py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-5xl mx-auto">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           {platforms.map((platform) => (
             <Link
               key={platform.name}

@@ -6,7 +6,8 @@ const footerLinks = {
     { name: 'YouTube Downloader', href: '/youtube-downloader' },
     { name: 'Instagram Downloader', href: '/instagram-downloader' },
     { name: 'Pinterest Downloader', href: '/pinterest-downloader' },
-    { name: 'How to Use', href: '/how-to-use' },
+    { name: 'TikTok Downloader', href: '/tiktok-downloader' },
+    { name: 'X (Twitter) Downloader', href: '/x-downloader' },
   ],
   legal: [
     { name: 'Privacy Policy', href: '/privacy-policy' },
@@ -15,9 +16,8 @@ const footerLinks = {
     { name: 'Contact', href: '/contact' },
   ],
   resources: [
+    { name: 'How to Use', href: '/how-to-use' },
     { name: 'FAQ', href: '/faq' },
-    { name: 'Blog', href: '/blog' },
-    { name: 'API', href: '/api-docs' },
   ],
 };
 

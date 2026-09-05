@@ -2,7 +2,7 @@
  * Shared media types + helpers used by every extractor and API route.
  */
 
-export type Platform = 'youtube' | 'instagram' | 'pinterest' | 'unknown';
+export type Platform = 'youtube' | 'instagram' | 'pinterest' | 'tiktok' | 'twitter' | 'unknown';
 export type MediaKind = 'video' | 'audio' | 'image';
 
 export interface FormatOption {
@@ -53,6 +53,9 @@ export function detectPlatform(input: string): Platform {
   if (/youtube\.com|youtu\.be|youtube-nocookie\.com|y2u\.be/.test(url)) return 'youtube';
   if (/instagram\.com|instagr\.am|ddinstagram\.com/.test(url)) return 'instagram';
   if (/pinterest\.[a-z.]+|pin\.it/.test(url)) return 'pinterest';
+  if (/tiktok\.com/.test(url)) return 'tiktok';
+  // \b keeps "x.com" from matching inside a longer name such as "netflix.com".
+  if (/\b(?:twitter\.com|x\.com|t\.co)\b/.test(url)) return 'twitter';
   return 'unknown';
 }
 

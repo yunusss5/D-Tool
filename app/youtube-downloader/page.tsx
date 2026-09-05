@@ -13,7 +13,7 @@ const highlights = [
   {
     icon: Film,
     title: 'Every quality YouTube offers',
-    body: 'Progressive MP4 up to 720p plus adaptive streams for 1080p, 1440p and 4K when the video has them.',
+    body: 'Everything from 144p to 4K, whatever the upload actually contains, each one a single MP4 with sound.',
   },
   {
     icon: Music,
@@ -70,9 +70,10 @@ export default function YouTubeDownloaderPage() {
           <div className="space-y-3 text-sm text-gray-600 dark:text-gray-400">
             <p>
               YouTube stores anything above 720p as two separate streams: one video-only and one
-              audio-only. Options marked <strong>No audio track</strong> are those high-resolution
-              video streams, so pick a progressive option if you want sound in a single file, or
-              download the video and the audio separately and combine them in your editor.
+              audio-only. This tool joins them back together while the file downloads, so every
+              option in the list is one playable MP4 with sound — there is nothing to combine
+              afterwards. The quality list is built from the streams that particular upload has, so
+              an old or low-resolution video will show fewer options than a recent one.
             </p>
             <p>
               Private, members-only and age-restricted uploads cannot be fetched, because they need a

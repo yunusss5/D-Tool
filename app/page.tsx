@@ -1,6 +1,3 @@
-'use client';
-
-import { useState, useEffect } from 'react';
 import { HeroSection } from '@/components/home/HeroSection';
 import { FeaturesSection } from '@/components/home/FeaturesSection';
 import { PlatformsSection } from '@/components/home/PlatformsSection';
@@ -8,17 +5,11 @@ import { DownloadForm } from '@/components/download/DownloadForm';
 import { PlatformCards } from '@/components/home/PlatformCards';
 import { TestimonialsSection } from '@/components/home/TestimonialsSection';
 
+/**
+ * Server component on purpose: only DownloadForm needs to be interactive, so
+ * everything else is rendered as HTML and never hydrated.
+ */
 export default function Home() {
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) {
-    return null;
-  }
-
   return (
     <div className="relative overflow-hidden">
       {/* Background decorations */}

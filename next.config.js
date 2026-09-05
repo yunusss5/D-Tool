@@ -2,8 +2,24 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // The muxing route spawns ffmpeg from node_modules. Next's tracer only follows
+  // `import`/`require`, so a binary resolved by path has to be named explicitly
+  // or it never reaches the deployed function.
+  experimental: {
+    outputFileTracingIncludes: {
+      '/api/download': ['./node_modules/ffmpeg-static/ffmpeg*'],
+      '/api/fetch': ['./node_modules/ffmpeg-static/ffmpeg*'],
+    },
+  },
   images: {
-    domains: ['i.ytimg.com', 'scontent.cdninstagram.com', 'i.pinimg.com', 'img.youtube.com'],
+    domains: [
+      'i.ytimg.com',
+      'scontent.cdninstagram.com',
+      'i.pinimg.com',
+      'img.youtube.com',
+      'pbs.twimg.com',
+      'p16-sign-va.tiktokcdn.com',
+    ],
     remotePatterns: [
       {
         protocol: 'https',
@@ -16,6 +32,18 @@ const nextConfig = {
       {
         protocol: 'https',
         hostname: '**.pinimg.com',
+      },
+      {
+        protocol: 'https',
+        hostname: '**.twimg.com',
+      },
+      {
+        protocol: 'https',
+        hostname: '**.tiktokcdn.com',
+      },
+      {
+        protocol: 'https',
+        hostname: '**.tiktokcdn-us.com',
       },
     ],
   },

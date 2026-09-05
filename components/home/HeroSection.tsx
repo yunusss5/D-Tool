@@ -1,6 +1,4 @@
-'use client';
-
-import { Download, Zap, Shield, Smartphone } from 'lucide-react';
+import { Zap, Shield, Smartphone } from 'lucide-react';
 
 export function HeroSection() {
   return (
@@ -22,8 +20,8 @@ export function HeroSection() {
 
         {/* Subheading */}
         <p className="text-lg sm:text-xl text-gray-600 dark:text-gray-300 max-w-2xl mx-auto mb-8 animate-slide-up" style={{ animationDelay: '0.1s' }}>
-          YouTube, Instagram, Pinterest — paste a link, pick your format, download instantly.
-          No clutter, no signup, no popup spam.
+          YouTube, Instagram, Pinterest, TikTok, X — paste a link, pick your format, download
+          instantly. No clutter, no signup, no popup spam.
         </p>
 
         {/* Feature pills */}

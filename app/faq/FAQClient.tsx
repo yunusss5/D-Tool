@@ -6,35 +6,39 @@ import { useState } from 'react';
 const faqs = [
   {
     question: 'Is D Tool really free to use?',
-    answer: 'Yes! D Tool is completely free to use with no hidden fees. You can download as many videos and images as you want without creating an account or paying anything.',
+    answer: 'Yes. There is no account, no fee and no download limit beyond a short-term rate limit that keeps the server responsive. There are no ads, no popups and no redirect chains.',
   },
   {
     question: 'What platforms are supported?',
-    answer: 'Currently, D Tool supports YouTube (videos, shorts, and audio extraction), Instagram (reels, posts, stories, and IGTV), and Pinterest (pins and images). We\'re working on adding more platforms.',
+    answer: 'YouTube (videos and Shorts from 144p to 4K, plus audio-only), Instagram (reels, posts and carousels), Pinterest (pins, video pins and Idea pins), TikTok (videos without the watermark, photo slideshows and the original sound) and X / Twitter (videos, GIFs and photos).',
   },
   {
     question: 'Is it safe to use D Tool?',
-    answer: 'Absolutely! We don\'t store any of your data or personal information. All processing happens in your browser, and we don\'t log any download requests. Our service is ad-supported but completely transparent about how we operate.',
+    answer: 'You are never asked to log in, and no credentials are involved anywhere in the process. Our server fetches the media and streams it straight through to your browser — nothing is written to disk and no history of what you downloaded is kept. The only thing held in memory is a per-IP request counter used for rate limiting.',
   },
   {
-    question: 'What video quality options are available?',
-    answer: 'For YouTube, we offer multiple resolutions from 144p up to 4K for videos, and 128kbps to 320kbps for audio. Instagram supports HD quality for reels and posts. Pinterest offers original quality downloads for pins and images.',
+    question: 'What quality options are available?',
+    answer: 'For YouTube, every height the video was published at, from 144p up to 4K, plus audio-only M4A or WebM. For the other platforms, every rendition the platform itself publishes is listed — highest first. Where the platform states an exact size, it is shown next to the option instead of a guess.',
   },
   {
     question: 'Can I download private content?',
-    answer: 'No. D Tool only works with public content that is accessible without authentication. Attempting to download private content will result in an error.',
+    answer: 'No. D Tool only reaches content that is public and viewable without logging in. Private accounts, friends-only posts, secret boards and deleted posts return a plain error rather than a file.',
   },
   {
     question: 'How fast are the downloads?',
-    answer: 'Our servers are optimized for speed, and most downloads start within 2-3 seconds. Actual speed depends on your internet connection and the file size.',
+    answer: 'The file is streamed through as it arrives, with no queue and no re-encoding, so the speed is essentially your own connection. The one exception is a YouTube option above 1080p, where the video and audio tracks are merged on the fly and the file starts a moment later.',
   },
   {
     question: 'Do you support batch downloads?',
-    answer: 'Currently, D Tool supports single file downloads. Batch download functionality is planned for our premium tier which will be available later this year.',
+    answer: 'One post at a time. A carousel, a photo slideshow or a multi-image pin does list every item separately, so you can save each one without pasting the link again.',
   },
   {
-    question: 'Why does the Instagram downloader sometimes fail?',
-    answer: 'Instagram frequently changes its platform structure, which can temporarily break our downloader. Our team monitors these changes and updates the service within 24 hours of any disruption.',
+    question: 'Why does a download sometimes fail?',
+    answer: 'These platforms change their internal endpoints without notice, and each one also refuses anonymous requests for private or deleted media. If a link that should be public fails, wait a moment and try again — the error message will say what actually went wrong rather than a generic failure.',
+  },
+  {
+    question: 'Why does TikTok return nothing on my network?',
+    answer: 'TikTok is blocked outright in some countries and on some networks, including India. When that is the case the request never reaches TikTok, so no downloader can succeed from there — the block sits between the server and TikTok, not in the link you pasted.',
   },
 ];
 

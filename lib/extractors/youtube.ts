@@ -1,10 +1,17 @@
 /**
- * YouTube extraction on top of yt-dlp.
+ * YouTube extraction.
  *
  * Everything worth downloading on YouTube is now an adaptive stream: video and
  * audio arrive as separate files. We list the useful pairings here and let
  * /api/download re-resolve them at click time (googlevideo URLs are signed and
  * expire, so we never hand them to the browser).
+ *
+ * Two engines sit behind this. InnerTube (plain `fetch`, no binaries) is tried
+ * first: it works on serverless hosts, answers in a fraction of a second, and
+ * reports an exact byte length per format. yt-dlp is the fallback for the cases
+ * a private API cannot cover, and it only exists on machines where someone
+ * installed it. Both label formats by itag, so a lookup served by one engine and
+ * a download served by the other still agree on what "137" means.
  */
 import {
   ExtractError,
@@ -16,7 +23,8 @@ import {
   type FormatOption,
   type MediaInfo,
 } from '@/lib/media';
-import { dumpInfo, resolveFfmpeg, type YtDlpFormat, type YtDlpInfo } from '@/lib/ytdlp';
+import { dumpInfo, resolveFfmpeg, resolveYtDlp, type YtDlpFormat, type YtDlpInfo } from '@/lib/ytdlp';
+import { innertubeInfo } from '@/lib/youtube-innertube';
 
 /** Heights we offer, best first. Anything YouTube has outside this list is ignored. */
 const TARGET_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144];
@@ -49,23 +57,54 @@ interface CacheEntry {
 }
 
 /**
- * yt-dlp takes a couple of seconds per lookup, and a visitor hits it twice:
- * once to list formats, once when they click. Signed URLs stay valid for hours,
- * so a short cache is safe and makes the second hit instant.
+ * A lookup costs a round trip, and a visitor triggers two: one to list formats,
+ * one when they click. Signed URLs stay valid for hours, so a short cache is
+ * safe and makes the second hit instant.
  */
 const infoCache = new Map<string, CacheEntry>();
 const CACHE_TTL = 5 * 60_000;
 
-export function youtubeInfo(videoId: string): Promise<YtDlpInfo> {
+/**
+ * InnerTube first, yt-dlp second. A refusal that no engine can work around
+ * (private, removed, age-gated) is reported straight away rather than spending
+ * seconds on a fallback that will land on the same wall.
+ */
+async function resolveInfo(videoId: string): Promise<YtDlpInfo> {
+  const attempt = await innertubeInfo(videoId);
+  if (attempt.info) return attempt.info;
+  if (attempt.fatal && attempt.error) throw attempt.error;
+
+  if (await resolveYtDlp()) {
+    try {
+      return await dumpInfo(watchUrl(videoId));
+    } catch (error) {
+      // Prefer InnerTube's diagnosis; yt-dlp's own failure is the better
+      // message only when InnerTube had nothing specific to say.
+      throw attempt.error ?? error;
+    }
+  }
+
+  throw (
+    attempt.error ??
+    new ExtractError('YouTube did not return anything downloadable for that link. Please try again.', 502)
+  );
+}
+
+export function youtubeInfo(videoId: string, options?: { refresh?: boolean }): Promise<YtDlpInfo> {
   const now = Date.now();
   for (const [key, entry] of infoCache) {
     if (now - entry.at > CACHE_TTL) infoCache.delete(key);
   }
 
+  // `refresh` exists for one caller: the download proxy, when googlevideo starts
+  // refusing a URL mid-transfer. A new signature is the only repair for that, so
+  // the cached copy has to be thrown away rather than handed back.
+  if (options?.refresh) infoCache.delete(videoId);
+
   const cached = infoCache.get(videoId);
   if (cached) return cached.info;
 
-  const info = dumpInfo(watchUrl(videoId)).catch((error) => {
+  const info = resolveInfo(videoId).catch((error) => {
     infoCache.delete(videoId);
     throw error;
   });

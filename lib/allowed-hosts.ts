@@ -19,6 +19,21 @@ const ALLOWED_HOST_SUFFIXES = [
   // Pinterest
   'pinimg.com',
   'pinterest.com',
+  // X (Twitter)
+  'twimg.com',
+  'twitter.com',
+  'x.com',
+  // TikTok — the CDN name varies by region and by asset type
+  'tiktokcdn.com',
+  'tiktokcdn-us.com',
+  'tiktokcdn-eu.com',
+  'tiktokv.com',
+  'tiktokv.us',
+  'tiktok.com',
+  'muscdn.com',
+  'musical.ly',
+  'byteoversea.com',
+  'ibyteimg.com',
 ];
 
 export interface UrlCheck {
@@ -61,5 +76,23 @@ export function refererFor(host: string): string | undefined {
   if (h.includes('googlevideo') || h.includes('ytimg') || h.includes('youtube')) {
     return 'https://www.youtube.com/';
   }
+  if (h.includes('tiktok') || h.includes('muscdn') || h.includes('musical') || h.includes('byteoversea')) {
+    return 'https://www.tiktok.com/';
+  }
+  // video.twimg.com and pbs.twimg.com serve without one, and sending a referer
+  // they did not expect is the surer way to get a 403.
   return undefined;
+}
+
+/**
+ * googlevideo will not serve an adaptive stream as one open-ended GET. Measured
+ * against a 3.4 MB audio file: a plain GET is throttled to about playback speed
+ * (~31 KiB/s, 107 s) and for some videos is refused outright with a 403, while
+ * the very same URL returns the whole file in 1.5 s when the request carries a
+ * Range header. Hosts listed here are therefore read as a series of ranged
+ * windows instead of one continuous stream.
+ */
+export function needsChunkedRange(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === 'googlevideo.com' || h.endsWith('.googlevideo.com');
 }

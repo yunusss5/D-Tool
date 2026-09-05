@@ -1,4 +1,4 @@
-import { Check, Youtube, Instagram, Image } from 'lucide-react';
+import { Check, Youtube, Instagram, Image, Music2, Twitter } from 'lucide-react';
 
 const platforms = [
   {
@@ -8,10 +8,10 @@ const platforms = [
     bgColor: 'bg-red-50 dark:bg-red-900/20',
     features: [
       'Video downloads (MP4)',
-      'Audio extraction (MP3)',
-      '4K/1080p quality options',
+      'Audio-only (M4A / WebM)',
+      '144p up to 4K options',
       'Shorts support',
-      'Thumbnail extraction',
+      'Exact file sizes',
     ],
   },
   {
@@ -21,10 +21,10 @@ const platforms = [
     bgColor: 'bg-pink-50 dark:bg-pink-900/20',
     features: [
       'Reels downloads',
-      'Post/carousel downloads',
-      'Story downloads',
-      'IGTV support',
-      'High quality output',
+      'Posts and carousels',
+      'Every slide separately',
+      'Thumbnail preview',
+      'Original quality',
     ],
   },
   {
@@ -34,10 +34,36 @@ const platforms = [
     bgColor: 'bg-red-50 dark:bg-red-900/20',
     features: [
       'Pin downloads',
-      'Board saving',
-      'Video pins support',
-      'Image format options',
-      'Multiple pin sizes',
+      'Original resolution',
+      'Video and Idea pins',
+      'Carousel pins',
+      'pin.it short links',
+    ],
+  },
+  {
+    name: 'TikTok',
+    icon: Music2,
+    color: 'text-tiktok',
+    bgColor: 'bg-cyan-50 dark:bg-cyan-900/20',
+    features: [
+      'No-watermark MP4',
+      'Photo slideshows',
+      'Original sound (MP3)',
+      'vm / vt short links',
+      'Full quality ladder',
+    ],
+  },
+  {
+    name: 'X (Twitter)',
+    icon: Twitter,
+    color: 'text-twitter',
+    bgColor: 'bg-sky-50 dark:bg-sky-900/20',
+    features: [
+      'Videos and GIFs',
+      'Every MP4 rendition',
+      'Photos at full size',
+      't.co links resolved',
+      'No login required',
     ],
   },
 ];
@@ -55,7 +81,7 @@ export function PlatformsSection() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {platforms.map((platform) => (
             <div
               key={platform.name}

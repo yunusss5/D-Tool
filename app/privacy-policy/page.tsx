@@ -84,7 +84,7 @@ export default function PrivacyPolicyPage() {
                 Third-Party Services
               </h2>
               <p className="text-gray-600 dark:text-gray-400">
-                Our service fetches content directly from third-party platforms (YouTube, Instagram, Pinterest). We are not responsible for the privacy practices of these platforms. We recommend reviewing their privacy policies.
+                Our service fetches content directly from third-party platforms (YouTube, Instagram, Pinterest, TikTok, X/Twitter). We are not responsible for the privacy practices of these platforms. We recommend reviewing their privacy policies.
               </p>
             </section>
 
