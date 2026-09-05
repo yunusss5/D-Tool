@@ -318,10 +318,13 @@ What is different about this path, and why the code looks the way it does:
   retried anonymously rather than reported, because the free tier serves the same
   files, just slower and rate-limited. Verified end to end: keyed attempt logged
   `Not enough balance`, the keyless retry returned 17,584,186 bytes of 480p MP4.
-- **Which host answers moves around.** `video-download-api.com` answered from both
-  a home connection and the Vercel function; `p.savenow.to` failed to connect from
-  home on 2026-09-05 while answering the same probe from Vercel in 4.7 s. Both are
-  tried, site host first, and `GET /api/youtube` reports each one's verdict.
+- **Only one of the two hosts is currently alive.** `video-download-api.com`
+  answers from a home connection and from the Vercel function alike;
+  `p.savenow.to` failed to connect from home on 2026-09-05 and answers **502 with
+  a Cloudflare error page** from Vercel, which is its origin being down rather than
+  an address being refused. It stays in the chain as a door that may reopen, the
+  site host goes first, and `GET /api/youtube` reports each one's verdict — JSON is
+  reachable, HTML is a wall or an outage, a thrown error never left the network.
 - **It is somebody else's upstream.** The second one in this codebase, after
   `tikwm.com` for TikTok. If YouTube downloads break on a deployment that relies
   on this path, check whether the resolver is still up before anything else.
