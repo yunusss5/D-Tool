@@ -99,6 +99,8 @@ interface ProgressResponse {
 async function submit(videoId: string, format: string): Promise<SubmitResponse> {
   const attempts = KEY ? [KEY, undefined] : [undefined];
   let last: SubmitResponse | undefined;
+  /** Kept so a resolver that answers something other than JSON can be diagnosed. */
+  let transport: string | undefined;
 
   for (const key of attempts) {
     const url = new URL(`https://${HOST}/ajax/download.php`);
@@ -110,8 +112,17 @@ async function submit(videoId: string, format: string): Promise<SubmitResponse> 
     let payload: SubmitResponse | undefined;
     try {
       const response = await fetchWithTimeout(url.toString(), { timeoutMs: 30_000 });
-      payload = (await response.json()) as SubmitResponse;
-    } catch {
+      const body = await response.text();
+      try {
+        payload = JSON.parse(body) as SubmitResponse;
+      } catch {
+        // A bot wall or an outage answers with HTML. Say which, because "please
+        // try again" is useless to whoever has to fix it.
+        transport = `HTTP ${response.status}, ${body.slice(0, 120).replace(/\s+/g, ' ').trim()}`;
+        continue;
+      }
+    } catch (error) {
+      transport = error instanceof Error ? error.message : String(error);
       continue;
     }
 
@@ -122,10 +133,11 @@ async function submit(videoId: string, format: string): Promise<SubmitResponse> 
     }
   }
 
+  if (transport) console.warn('[youtube-api] the resolver did not answer JSON:', transport);
   throw new ExtractError(
     last?.message
       ? `The YouTube resolver refused this video: ${last.message}`
-      : 'The YouTube resolver did not accept this video. Please try again.',
+      : `The YouTube resolver did not accept this video${transport ? ` (${transport})` : ''}.`,
     502
   );
 }

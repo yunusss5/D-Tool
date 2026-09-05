@@ -11,8 +11,12 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  * handshake — and the media reads, since a signed URL can be tied to the address
  * that asked for it — off the host's own address. It is the only fix for a
  * challenged host that needs no YouTube account.
+ *
+ * The third-party resolver (`savenow.to`, see lib/youtube-api.ts) is on the list
+ * for the same reason: it is the fallback for a distrusted address, so it is no
+ * use if it distrusts that address too.
  */
-const PROXY_HOSTS = /(^|\.)(youtube\.com|youtubei\.googleapis\.com|googlevideo\.com)$/i;
+const PROXY_HOSTS = /(^|\.)(youtube\.com|youtubei\.googleapis\.com|googlevideo\.com|savenow\.to)$/i;
 
 type ProxiedFetch = { call: typeof globalThis.fetch; dispatcher: unknown };
 let proxyAgent: Promise<ProxiedFetch | null> | undefined;
