@@ -34,6 +34,9 @@ const ALLOWED_HOST_SUFFIXES = [
   'musical.ly',
   'byteoversea.com',
   'ibyteimg.com',
+  // The public resolver the TikTok extractor falls back to hands back CDN URLs
+  // for most posts, but serves some renditions from its own host.
+  'tikwm.com',
 ];
 
 export interface UrlCheck {

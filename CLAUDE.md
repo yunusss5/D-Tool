@@ -212,13 +212,36 @@ What the code does about it, with no configuration:
   challenged host degrades to fewer options rather than to downloads that die a
   megabyte in.
 
-If a host is challenged persistently, those three env vars are the way out, in
-increasing order of effort: `YT_VISITOR_DATA` (an id minted on a trusted network,
-no account), `YT_COOKIE` (a signed-in cookie — reliable, but ties downloads to
+**Measured on this deployment (Vercel, 2026-09-05), so nobody has to re-derive
+it.** Every combination was probed from the running function and all of them came
+back `Sign in to confirm you're not a bot`: both front doors
+(`www.youtube.com/youtubei/v1/player` and `youtubei.googleapis.com/…?key=`), all
+four clients (VISIONOS, ANDROID_VR, ANDROID, TVHTML5), and all three identities —
+minted on the host, **minted on a residential connection and hardcoded**, and
+omitted entirely. Two regions behaved identically (`iad1`, then `bom1`). The
+conclusions worth keeping:
+
+- **It is the address, not the request.** No client, front door, header set or
+  identity provenance changes the verdict, so `YT_VISITOR_DATA` cannot rescue a
+  challenged deployment — a trusted id does not launder an untrusted IP. That
+  leaves `YT_COOKIE` (an account YouTube already trusts) and `YT_PROXY` (a
+  different address), and nothing else.
+- **Region hopping is not the lever it looks like.** Vercel functions egress from
+  cloud ranges wherever they run, and Google challenges the range, not the city.
+  `vercel.json` pins `bom1` for latency, not for reputation.
+- **Public resolvers are not a fallback here.** Invidious (8 instances: 401/403/
+  404/dead), Piped (5: one alive, 500 on retry) and cobalt (5: JWT-gated or dead)
+  were all measured. There is no credential-free third party left to lean on for
+  YouTube — unlike TikTok, where one does still work.
+
+If a host is challenged persistently, the env vars are the way out, in increasing
+order of effort: `YT_COOKIE` (a signed-in cookie — reliable, but ties downloads to
 that account, so use a throwaway), `YT_PROXY` (moves both the handshake and the
-media reads off the host's address; the most reliable). Changing the deployment
-region is worth trying before any of them, since reputation varies sharply
-between them — on Vercel that is Project → Settings → Functions → Region.
+media reads off the host's address; the most reliable). `YT_VISITOR_DATA` only
+helps a host that is *intermittently* challenged, since it saves the mint round
+trip; per the measurement above it does not lift a standing block. Running the app
+somewhere with a residential address — a home machine behind a tunnel — works
+without any of them, which is why the whole ladder resolves locally.
 
 ### Downloading
 
@@ -247,9 +270,23 @@ between them — on Vercel that is Project → Settings → Functions → Region
   page's LSD token and browser-shaped `Sec-Fetch-*` headers; the extractor
   performs that handshake and caches the session for 10 minutes. The payload
   carries no duration field, so reel length is read from the signed `efg` blob.
-- **TikTok blocks some networks and regions outright**, including the network
-  this was developed on, so `/api/tiktok` can only be verified from a permitted
-  network. The extractor and its error copy handle that case explicitly.
+- **TikTok's own two doors are shut to servers, so there is a third.** Measured
+  from a home connection and from the Vercel function, identically: the app hosts
+  (`api22-normal-c-useast2a.tiktokv.com` and friends) answer `200` with a
+  zero-byte body, and the web page returns a 106 KB shell with no
+  `__UNIVERSAL_DATA_FOR_REHYDRATION__`, no `playAddr` and no `Set-Cookie` — even
+  `/api/item/detail/` serves that same HTML shell instead of JSON. Hydration now
+  needs an `msToken` minted by TikTok's own JavaScript, which a serverless
+  function cannot produce. `lib/extractors/tiktok.ts` therefore falls back to the
+  public `tikwm.com` resolver, which returns watermark-free URLs with exact byte
+  lengths; verified end to end (6,644,830 and 7,200,869 byte MP4s through
+  `/api/download`). It is asked only after the first two layers fail, and it is
+  the one upstream in this codebase that belongs to somebody else — if TikTok
+  downloads ever break, check whether that resolver is still up before anything
+  else. Only `play`/`hdplay` are offered, never `wmplay`: a watermarked file under
+  a "no watermark" label would be worse than no option at all.
+- TikTok reports the long edge as `height` (portrait video is 1080×1920), so
+  quality labels use the short edge — "1080p", not "1920p".
 - Deferred from the original plan: per-format SEO sub-pages, blog, monetization
   and CDN configuration.
 

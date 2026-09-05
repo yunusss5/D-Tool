@@ -1,20 +1,21 @@
 /**
  * TikTok extraction.
  *
- * Three sources, tried in order of how clean their output is:
+ * Four sources, tried in order of how clean their output is:
  *
  *  1. The mobile app's `/aweme/v1/feed/` endpoint. When it answers it is the best
- *     of the three — watermark-free URLs, an exact byte length per rendition, no
+ *     of the four — watermark-free URLs, an exact byte length per rendition, no
  *     cookies involved — but TikTok gates it by IP reputation and region.
- *  2. The web page's own hydration blob, which every browser receives. Same
- *     renditions, except the CDN then expects a tiktok.com referer (the download
- *     proxy sends one).
- *  3. yt-dlp, if the host happens to have it.
- *
- * Note for anyone testing this from a network where TikTok is blocked — India,
- * for instance — the first two layers cannot succeed: the ISP answers every
- * tiktok.com request with a placeholder page and truncates the API hosts to an
- * empty body. That is not a bug in this file, and the error message says so.
+ *  2. The web page's own hydration blob, which a real browser receives.
+ *  3. `tikwm.com`, a public resolver, because layers 1 and 2 are refused from far
+ *     more networks than they are served to. Measured from both a home connection
+ *     and a Vercel function: the app hosts answer `200` with an empty body and the
+ *     web page arrives as a 106 KB shell with no hydration blob and no cookies —
+ *     TikTok now wants an `msToken` minted by its own JavaScript, which a
+ *     serverless function has no way to produce. This layer is what makes the
+ *     platform work at all on a normal host; it is asked only after the first two
+ *     have failed, and it is the one source here that is somebody else's server.
+ *  4. yt-dlp, if the host happens to have it.
  */
 import {
   ExtractError,
@@ -338,6 +339,89 @@ async function viaWebPage(pageUrl: string, id: string): Promise<TikTokMedia | un
   return undefined;
 }
 
+/* ------------------------------- mirror -------------------------------- */
+
+const MIRROR = 'https://www.tikwm.com';
+
+interface MirrorData {
+  id?: string;
+  title?: string;
+  duration?: number | string;
+  cover?: string;
+  origin_cover?: string;
+  play?: string;
+  hdplay?: string;
+  size?: number | string;
+  hd_size?: number | string;
+  music?: string;
+  images?: string[];
+  author?: { unique_id?: string; nickname?: string };
+}
+
+const toBytes = (value: number | string | undefined): number | undefined => {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
+/** Some renditions come back as a path on the resolver rather than a CDN URL. */
+const absolute = (url: string | undefined): string | undefined => {
+  if (!url) return undefined;
+  if (url.startsWith('http')) return url;
+  return url.startsWith('/') ? `${MIRROR}${url}` : undefined;
+};
+
+/**
+ * Ask the public resolver. Only the two watermark-free renditions are taken:
+ * `wmplay` exists as well, and offering a burned-in watermark under a label that
+ * says "no watermark" would be worse than offering nothing.
+ */
+async function viaMirror(pageUrl: string, id: string): Promise<TikTokMedia | undefined> {
+  const text = await tryFetchText(`${MIRROR}/api/?url=${encodeURIComponent(pageUrl)}&hd=1`, {
+    timeoutMs: 12_000,
+    headers: { 'User-Agent': WEB_UA, Accept: 'application/json' },
+  });
+  if (!text?.trimStart().startsWith('{')) return undefined;
+
+  let data: MirrorData | undefined;
+  try {
+    const json = JSON.parse(text) as { code?: number; data?: MirrorData };
+    if (json.code !== 0) return undefined;
+    data = json.data;
+  } catch {
+    return undefined;
+  }
+  if (!data) return undefined;
+
+  const videos: TikTokMedia['videos'] = [];
+  for (const [gear, url, bytes] of [
+    ['HD', absolute(data.hdplay), toBytes(data.hd_size)],
+    ['Original', absolute(data.play), toBytes(data.size)],
+  ] as const) {
+    // The two renditions are frequently the same encode behind two URLs, so an
+    // identical byte length means a duplicate row rather than a second choice.
+    if (!url || videos.some((v) => v.bytes && v.bytes === bytes)) continue;
+    videos.push({ url, bytes, gear });
+  }
+
+  const images = (data.images ?? [])
+    .map((image) => absolute(image))
+    .filter((url): url is string => Boolean(url));
+
+  if (!videos.length && !images.length) return undefined;
+
+  const duration = toBytes(data.duration);
+  return {
+    id: data.id || id,
+    desc: data.title,
+    author: data.author?.unique_id ?? data.author?.nickname,
+    durationSec: duration,
+    cover: absolute(data.origin_cover) ?? absolute(data.cover),
+    music: absolute(data.music),
+    videos: rankVideos(videos),
+    images,
+  };
+}
+
 /* -------------------------------- yt-dlp -------------------------------- */
 
 function fromYtDlp(info: YtDlpInfo, id: string): TikTokMedia | undefined {
@@ -374,9 +458,15 @@ function extensionOf(url: string, fallback: string): string {
 }
 
 function videoQuality(video: TikTokMedia['videos'][number]): string {
+  // TikTok is portrait, so the height is the long edge: a 1080×1920 rendition
+  // reports height 1920, and calling that "1920p" reads as better than 1080p to
+  // anyone who has ever picked a quality before. Label by the short edge.
+  if (video.height && video.width) return `${Math.min(video.width, video.height)}p`;
   if (video.height) return `${video.height}p`;
-  const gear = video.gear?.match(/(\d{3,4})/)?.[1];
-  return gear ? `${gear}p` : 'Video';
+  const digits = video.gear?.match(/(\d{3,4})/)?.[1];
+  if (digits) return `${digits}p`;
+  // The mirror names its renditions rather than measuring them ("HD", "Original").
+  return video.gear?.trim() || 'Video';
 }
 
 function toMediaInfo(media: TikTokMedia): MediaInfo {
@@ -452,6 +542,7 @@ export async function extractTikTok(rawUrl: string): Promise<MediaInfo> {
 
   let media = await viaAppApi(id);
   media ??= await viaWebPage(pageUrl, id);
+  media ??= await viaMirror(pageUrl, id);
 
   if (!media && (await resolveYtDlp())) {
     try {
