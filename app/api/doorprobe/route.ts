@@ -16,6 +16,7 @@
  */
 import { NextResponse } from 'next/server';
 import { fetchWithTimeout } from '@/lib/http';
+import { coldStartPoToken, webPoToken } from '@/lib/youtube-potoken';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -203,7 +204,7 @@ async function mintVisitor(): Promise<string | undefined> {
   }
 }
 
-async function askVisionOs(videoId: string, visitor: string | undefined) {
+async function askVisionOs(videoId: string, visitor: string | undefined, poToken?: string) {
   const client = {
     clientName: 'VISIONOS',
     clientVersion: '1.02',
@@ -234,6 +235,7 @@ async function askVisionOs(videoId: string, visitor: string | undefined) {
         context: { client, user: { lockedSafetyMode: false }, request: { useSsl: true } },
         contentCheckOk: true,
         racyCheckOk: true,
+        ...(poToken ? { serviceIntegrityDimensions: { poToken } } : {}),
       }),
     });
     if (!response.ok) return { status: `HTTP_${response.status}`, formats: 0, visitor: Boolean(visitor) };
@@ -251,11 +253,91 @@ async function askVisionOs(videoId: string, visitor: string | undefined) {
   }
 }
 
+/** The client that refuses an anonymous server hardest, and the token's real test. */
+async function askWeb(videoId: string, visitor: string, poToken: string) {
+  try {
+    const response = await fetchWithTimeout(PLAYER, {
+      method: 'POST',
+      timeoutMs: 20_000,
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': UA,
+        'X-YouTube-Client-Name': '1',
+        'X-YouTube-Client-Version': '2.20240726.00.00',
+        Origin: 'https://www.youtube.com',
+        Accept: '*/*',
+        'X-Goog-Visitor-Id': visitor,
+      },
+      body: JSON.stringify({
+        videoId,
+        context: {
+          client: {
+            clientName: 'WEB',
+            clientVersion: '2.20240726.00.00',
+            osName: 'Windows',
+            osVersion: '10.0',
+            platform: 'DESKTOP',
+            hl: 'en',
+            gl: 'US',
+            utcOffsetMinutes: 0,
+            visitorData: visitor,
+          },
+          user: { lockedSafetyMode: false },
+          request: { useSsl: true },
+        },
+        contentCheckOk: true,
+        racyCheckOk: true,
+        serviceIntegrityDimensions: { poToken },
+      }),
+    });
+    if (!response.ok) return { status: `HTTP_${response.status}`, formats: 0, plainUrls: 0 };
+    const body = (await response.json()) as {
+      playabilityStatus?: { status?: string; reason?: string };
+      streamingData?: { formats?: Array<{ url?: string }>; adaptiveFormats?: Array<{ url?: string }> };
+    };
+    const all = [...(body.streamingData?.formats ?? []), ...(body.streamingData?.adaptiveFormats ?? [])];
+    return {
+      status: body.playabilityStatus?.status ?? 'NO_STATUS',
+      reason: body.playabilityStatus?.reason?.slice(0, 60),
+      formats: all.length,
+      // WEB usually hands back `signatureCipher`, which this app cannot decipher —
+      // so "answered" is only useful if some URLs arrive plain.
+      plainUrls: all.filter((format) => format.url).length,
+    };
+  } catch (error) {
+    return { status: `THREW_${(error as Error).name}`, formats: 0, plainUrls: 0 };
+  }
+}
+
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const videoId = params.get('id') || 'dQw4w9WgXcQ';
   const mode = params.get('m') || 'invidious';
   const started = Date.now();
+
+  if (mode === 'pot') {
+    // Does a proof-of-origin token mint here at all, and does the WEB client —
+    // the one that refuses an anonymous server hardest — answer once it has one?
+    const visitor = (await mintVisitor()) ?? '';
+    const started2 = Date.now();
+    const token = await webPoToken(visitor);
+    const mintMs = Date.now() - started2;
+    const cold = await coldStartPoToken(visitor);
+    return NextResponse.json(
+      {
+        mode,
+        region: process.env.VERCEL_REGION ?? 'local',
+        visitor: visitor ? `len${visitor.length}` : 'refused',
+        token: token ? `len${token.length}` : 'none',
+        coldStart: cold ? `len${cold.length}` : 'none',
+        mintMs,
+        withToken: token ? await askVisionOs(videoId, visitor, token) : undefined,
+        web: token ? await askWeb(videoId, visitor, token) : undefined,
+        ms: Date.now() - started,
+      },
+      { headers: { 'Cache-Control': 'no-store' } }
+    );
+  }
 
   if (mode === 'sample') {
     // Vercel does not give a function a fixed egress address, so "is this host
