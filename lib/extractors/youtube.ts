@@ -1,0 +1,270 @@
+/**
+ * YouTube extraction on top of yt-dlp.
+ *
+ * Everything worth downloading on YouTube is now an adaptive stream: video and
+ * audio arrive as separate files. We list the useful pairings here and let
+ * /api/download re-resolve them at click time (googlevideo URLs are signed and
+ * expire, so we never hand them to the browser).
+ */
+import {
+  ExtractError,
+  formatBytes,
+  formatViews,
+  sanitizeFilename,
+  secondsToClock,
+  youtubeDownloadUrl,
+  type FormatOption,
+  type MediaInfo,
+} from '@/lib/media';
+import { dumpInfo, resolveFfmpeg, type YtDlpFormat, type YtDlpInfo } from '@/lib/ytdlp';
+
+/** Heights we offer, best first. Anything YouTube has outside this list is ignored. */
+const TARGET_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144];
+
+const ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+
+export function youtubeVideoId(url: string): string {
+  const trimmed = url.trim();
+  if (ID_PATTERN.test(trimmed)) return trimmed;
+
+  const patterns = [
+    /(?:youtube\.com|youtube-nocookie\.com)\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/|v\/)([A-Za-z0-9_-]{11})/,
+    /youtu\.be\/([A-Za-z0-9_-]{11})/,
+    /[?&]v=([A-Za-z0-9_-]{11})/,
+  ];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  throw new ExtractError('That does not look like a YouTube video link.', 400);
+}
+
+export function watchUrl(videoId: string): string {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+interface CacheEntry {
+  at: number;
+  info: Promise<YtDlpInfo>;
+}
+
+/**
+ * yt-dlp takes a couple of seconds per lookup, and a visitor hits it twice:
+ * once to list formats, once when they click. Signed URLs stay valid for hours,
+ * so a short cache is safe and makes the second hit instant.
+ */
+const infoCache = new Map<string, CacheEntry>();
+const CACHE_TTL = 5 * 60_000;
+
+export function youtubeInfo(videoId: string): Promise<YtDlpInfo> {
+  const now = Date.now();
+  for (const [key, entry] of infoCache) {
+    if (now - entry.at > CACHE_TTL) infoCache.delete(key);
+  }
+
+  const cached = infoCache.get(videoId);
+  if (cached) return cached.info;
+
+  const info = dumpInfo(watchUrl(videoId)).catch((error) => {
+    infoCache.delete(videoId);
+    throw error;
+  });
+  infoCache.set(videoId, { at: now, info });
+  return info;
+}
+
+const isVideoOnly = (f: YtDlpFormat) => f.vcodec !== 'none' && !!f.vcodec && f.acodec === 'none';
+const isAudioOnly = (f: YtDlpFormat) => f.acodec !== 'none' && !!f.acodec && f.vcodec === 'none';
+const isProgressive = (f: YtDlpFormat) =>
+  !!f.vcodec && f.vcodec !== 'none' && !!f.acodec && f.acodec !== 'none';
+
+/** Plain HTTPS only — HLS/DASH manifest entries can't be streamed as a file. */
+const isDirect = (f: YtDlpFormat) =>
+  !!f.url && (!f.protocol || f.protocol === 'https' || f.protocol === 'http');
+
+function byteSize(f: YtDlpFormat, durationSec: number): number | undefined {
+  if (f.filesize && f.filesize > 0) return f.filesize;
+  if (f.filesize_approx && f.filesize_approx > 0) return f.filesize_approx;
+  const rate = f.tbr ?? f.vbr ?? f.abr;
+  if (rate && durationSec) return Math.round((rate * 1000 * durationSec) / 8);
+  return undefined;
+}
+
+/** Prefer H.264 — it plays everywhere. AV1/VP9 only when nothing else exists. */
+function codecRank(vcodec = ''): number {
+  if (vcodec.startsWith('avc1') || vcodec.startsWith('h264')) return 3;
+  if (vcodec.startsWith('av01')) return 2;
+  if (vcodec.startsWith('vp9') || vcodec.startsWith('vp09')) return 1;
+  return 0;
+}
+
+function bestVideoAt(formats: YtDlpFormat[], height: number): YtDlpFormat | undefined {
+  return formats
+    .filter((f) => f.height === height)
+    .sort((a, b) => {
+      const container = Number(b.ext === 'mp4') - Number(a.ext === 'mp4');
+      if (container) return container;
+      const codec = codecRank(b.vcodec ?? '') - codecRank(a.vcodec ?? '');
+      if (codec) return codec;
+      return (b.tbr ?? 0) - (a.tbr ?? 0);
+    })[0];
+}
+
+function bestAudio(formats: YtDlpFormat[], ext: 'm4a' | 'webm'): YtDlpFormat | undefined {
+  const wanted = formats.filter((f) => (ext === 'm4a' ? f.ext === 'm4a' : f.ext === 'webm'));
+  const pool = wanted.length ? wanted : formats;
+  return pool.sort((a, b) => (b.abr ?? b.tbr ?? 0) - (a.abr ?? a.tbr ?? 0))[0];
+}
+
+function qualityLabel(f: YtDlpFormat): string {
+  const height = f.height ?? 0;
+  const fps = f.fps && f.fps >= 50 ? Math.round(f.fps) : 0;
+  const base = `${height}p${fps ? fps : ''}`;
+  if (height >= 2160) return `${base} (4K)`;
+  if (height >= 1440) return `${base} (2K)`;
+  return base;
+}
+
+async function buildFormats(info: YtDlpInfo, videoId: string, title: string): Promise<FormatOption[]> {
+  const all = (info.formats ?? []).filter(isDirect);
+  const duration = Math.round(info.duration ?? 0);
+
+  const videoOnly = all.filter(isVideoOnly);
+  const audioOnly = all.filter(isAudioOnly);
+  const progressive = all.filter(isProgressive);
+
+  const canMerge = Boolean(await resolveFfmpeg());
+  const m4a = bestAudio(audioOnly, 'm4a');
+  const webmAudio = bestAudio(audioOnly, 'webm');
+
+  const options: FormatOption[] = [];
+  const seen = new Set<string>();
+
+  for (const height of TARGET_HEIGHTS) {
+    const video = bestVideoAt(videoOnly, height);
+    const progressiveMatch = progressive.find((f) => f.height === height);
+
+    // A progressive stream already carries audio, so it needs no muxing at all.
+    if (progressiveMatch && (!video || !canMerge)) {
+      const label = qualityLabel(progressiveMatch);
+      if (seen.has(label)) continue;
+      seen.add(label);
+      const ext = progressiveMatch.ext === 'webm' ? 'webm' : 'mp4';
+      const size = byteSize(progressiveMatch, duration);
+      options.push({
+        id: `yt-${progressiveMatch.format_id}`,
+        quality: label,
+        type: 'video',
+        format: ext,
+        fileSize: formatBytes(size),
+        bytes: size,
+        url: '',
+        downloadUrl: youtubeDownloadUrl(
+          videoId,
+          sanitizeFilename(title, ext),
+          progressiveMatch.format_id
+        ),
+      });
+      continue;
+    }
+
+    if (!video) continue;
+
+    const label = qualityLabel(video);
+    if (seen.has(label)) continue;
+
+    const useWebm = video.ext === 'webm';
+    const audio = useWebm ? webmAudio ?? m4a : m4a ?? webmAudio;
+    const ext = useWebm && audio?.ext === 'webm' ? 'webm' : 'mp4';
+
+    if (canMerge && audio) {
+      seen.add(label);
+      const size = (byteSize(video, duration) ?? 0) + (byteSize(audio, duration) ?? 0);
+      options.push({
+        id: `yt-${video.format_id}-${audio.format_id}`,
+        quality: label,
+        type: 'video',
+        format: ext,
+        fileSize: size ? formatBytes(size) : undefined,
+        bytes: size || undefined,
+        url: '',
+        downloadUrl: youtubeDownloadUrl(
+          videoId,
+          sanitizeFilename(title, ext),
+          video.format_id,
+          audio.format_id
+        ),
+      });
+      continue;
+    }
+
+    // No ffmpeg: the honest option is a silent video file, clearly labelled.
+    seen.add(label);
+    options.push({
+      id: `yt-${video.format_id}`,
+      quality: label,
+      type: 'video',
+      format: video.ext === 'webm' ? 'webm' : 'mp4',
+      noAudio: true,
+      fileSize: formatBytes(byteSize(video, duration) ?? 0) || undefined,
+      bytes: byteSize(video, duration),
+      url: '',
+      downloadUrl: youtubeDownloadUrl(
+        videoId,
+        sanitizeFilename(`${title} (video only)`, video.ext === 'webm' ? 'webm' : 'mp4'),
+        video.format_id
+      ),
+    });
+  }
+
+  // Audio-only downloads, best of each container.
+  for (const audio of [m4a, webmAudio]) {
+    if (!audio) continue;
+    const ext = audio.ext === 'webm' ? 'webm' : 'm4a';
+    const kbps = Math.round(audio.abr ?? audio.tbr ?? 0);
+    const label = kbps ? `${kbps}kbps` : 'Audio';
+    if (seen.has(`a-${label}`)) continue;
+    seen.add(`a-${label}`);
+    options.push({
+      id: `yt-audio-${audio.format_id}`,
+      quality: label,
+      type: 'audio',
+      format: ext,
+      fileSize: formatBytes(byteSize(audio, duration) ?? 0) || undefined,
+      bytes: byteSize(audio, duration),
+      url: '',
+      downloadUrl: youtubeDownloadUrl(videoId, sanitizeFilename(title, ext), audio.format_id),
+    });
+  }
+
+  return options;
+}
+
+export async function extractYouTube(url: string): Promise<MediaInfo> {
+  const videoId = youtubeVideoId(url);
+  const info = await youtubeInfo(videoId);
+
+  if (info.is_live || info.live_status === 'is_live') {
+    throw new ExtractError(
+      'That is a live stream. Wait until the broadcast ends, then download the recording.',
+      400
+    );
+  }
+
+  const title = info.title?.trim() || 'YouTube video';
+  const formats = await buildFormats(info, videoId, title);
+
+  if (!formats.length) {
+    throw new ExtractError('No downloadable stream was offered for this video.', 502);
+  }
+
+  return {
+    platform: 'youtube',
+    title,
+    thumbnail: info.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    duration: info.duration ? secondsToClock(Math.round(info.duration)) : undefined,
+    author: info.channel || info.uploader || undefined,
+    views: info.view_count ? formatViews(info.view_count) : undefined,
+    formats,
+  };
+}
