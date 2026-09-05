@@ -12,6 +12,7 @@ import { checkProxyTarget, needsChunkedRange, refererFor } from '@/lib/allowed-h
 import { mediaFetch } from '@/lib/http';
 import { clientKey, rateLimit } from '@/lib/rate-limit';
 import { youtubeInfo } from '@/lib/extractors/youtube';
+import { API_PREFIX, apiResolve } from '@/lib/youtube-api';
 import { muxToStdout, type YtDlpFormat } from '@/lib/ytdlp';
 
 export const runtime = 'nodejs';
@@ -472,6 +473,13 @@ export async function GET(request: NextRequest) {
       const video = params.get('v') ?? '';
       if (!videoId || !video) {
         return errorResponse('Missing YouTube id or format.', 400);
+      }
+      // Formats from the third-party resolver are prepared on demand: the job
+      // runs now, and what comes back is a finished file on its own host, so it
+      // streams like any other CDN target rather than going through the muxer.
+      if (video.startsWith(API_PREFIX)) {
+        const resolved = await apiResolve(videoId, video, request.signal);
+        return await streamCdn(request, resolved.url, filename);
       }
       return await streamYouTube(request, videoId, video, params.get('a'), filename);
     }

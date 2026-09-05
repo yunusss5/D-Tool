@@ -6,12 +6,15 @@
  * /api/download re-resolve them at click time (googlevideo URLs are signed and
  * expire, so we never hand them to the browser).
  *
- * Two engines sit behind this. InnerTube (plain `fetch`, no binaries) is tried
+ * Three engines sit behind this. InnerTube (plain `fetch`, no binaries) is tried
  * first: it works on serverless hosts, answers in a fraction of a second, and
  * reports an exact byte length per format. yt-dlp is the fallback for the cases
  * a private API cannot cover, and it only exists on machines where someone
  * installed it. Both label formats by itag, so a lookup served by one engine and
- * a download served by the other still agree on what "137" means.
+ * a download served by the other still agree on what "137" means. The third is
+ * the third-party resolver in `youtube-api.ts`, reached only when the first two
+ * fail in a way that says YouTube refused this *address* — its format ids carry
+ * an `api-` prefix precisely so they can never be confused with an itag.
  */
 import {
   ExtractError,
@@ -25,6 +28,7 @@ import {
 } from '@/lib/media';
 import { dumpInfo, resolveFfmpeg, resolveYtDlp, type YtDlpFormat, type YtDlpInfo } from '@/lib/ytdlp';
 import { innertubeInfo } from '@/lib/youtube-innertube';
+import { apiYouTubeInfo } from '@/lib/youtube-api';
 
 /** Heights we offer, best first. Anything YouTube has outside this list is ignored. */
 const TARGET_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144];
@@ -318,7 +322,25 @@ async function buildFormats(info: YtDlpInfo, videoId: string, title: string): Pr
 
 export async function extractYouTube(url: string): Promise<MediaInfo> {
   const videoId = youtubeVideoId(url);
-  const info = await youtubeInfo(videoId);
+
+  let info: YtDlpInfo;
+  try {
+    info = await youtubeInfo(videoId);
+  } catch (error) {
+    // A challenge, a timeout or an empty answer means YouTube would not talk to
+    // *this address* — which the resolver in youtube-api.ts does not share. A
+    // verdict about the video itself (private, removed, members-only) travels
+    // with the video, so there is nothing to gain by asking somebody else.
+    const transport =
+      error instanceof ExtractError && (error.status === 502 || error.status === 503 || error.status === 504);
+    if (!transport) throw error;
+    try {
+      return await apiYouTubeInfo(videoId);
+    } catch (fallback) {
+      console.warn('[youtube] the resolver could not stand in either:', fallback);
+      throw error;
+    }
+  }
 
   if (info.is_live || info.live_status === 'is_live') {
     throw new ExtractError(

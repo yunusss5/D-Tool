@@ -82,6 +82,8 @@ breaks the install. Optional environment overrides:
 | `YT_VISITOR_DATA` | A visitor id minted on a network YouTube trusts, used instead of minting one |
 | `YT_COOKIE` | A signed-in `Cookie` header; the SAPISIDHASH signature is derived from it |
 | `YT_PROXY` | HTTP(S) proxy for `youtube.com` and `googlevideo.com` traffic only |
+| `YT_API_KEY` | Key for the third-party YouTube resolver; optional, it also answers keyless |
+| `YT_API_HOST` | Resolver hostname, if your dashboard shows one other than `p.savenow.to` |
 
 The last three exist for one situation, described under
 [Deploying to a datacenter](#deploying-to-a-datacenter). None of them is needed
@@ -262,6 +264,40 @@ helps a host that is *intermittently* challenged, since it saves the mint round
 trip; per the measurement above it does not lift a standing block. Running the app
 somewhere with a residential address — a home machine behind a tunnel — works
 without any of them, which is why the whole ladder resolves locally.
+
+### The YouTube resolver of last resort
+
+Because that ladder all needs an operator, there is one rung below it that needs
+nobody: when InnerTube (and yt-dlp, if present) fail with a *transport* verdict —
+502, 503, 504, i.e. "this address was refused" — `lib/extractors/youtube.ts` hands
+the video to `lib/youtube-api.ts`, which asks a third-party resolver
+(`video-download-api.com`, API host `p.savenow.to`) to prepare the file on an
+address Google does trust. Only transport failures fall through; a verdict about
+the video itself (private, removed, members-only, live) travels with the video, so
+asking somebody else cannot help and is not attempted.
+
+What is different about this path, and why the code looks the way it does:
+
+- **It is a job API, not a format list.** Submit `?format=<key>&url=<watch url>`,
+  poll `?id=` until `progress == 1000`, then stream the `download_url` it returns.
+  So sizes cannot be known before the job runs and the listing shows none — an
+  honest blank rather than a guess — and the fixed menu (2160p/1440p/1080p/720p/
+  480p/360p, m4a, mp3) replaces the itag-derived one.
+- **Audio is merged upstream.** This path needs no ffmpeg and never offers a
+  silent video file. Its format ids are prefixed `api-` so they can never collide
+  with an itag.
+- **Metadata comes from oEmbed, not the resolver.** `youtube.com/oembed` is public
+  and answers fine from a datacenter, so title/channel/thumbnail cost one cheap
+  request instead of starting a job just to print a title. oEmbed carries no
+  duration, so listings on this path show none.
+- **The key is optional and failure-soft.** `YT_API_KEY` is sent when set, but a
+  refusal from the keyed tier — an exhausted balance being the likely one — is
+  retried anonymously rather than reported, because the free tier serves the same
+  files, just slower and rate-limited. Verified end to end: keyed attempt logged
+  `Not enough balance`, the keyless retry returned 17,584,186 bytes of 480p MP4.
+- **It is somebody else's upstream.** The second one in this codebase, after
+  `tikwm.com` for TikTok. If YouTube downloads break on a deployment that relies
+  on this path, check whether the resolver is still up before anything else.
 
 ### Downloading
 

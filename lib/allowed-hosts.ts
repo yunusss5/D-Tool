@@ -37,6 +37,10 @@ const ALLOWED_HOST_SUFFIXES = [
   // The public resolver the TikTok extractor falls back to hands back CDN URLs
   // for most posts, but serves some renditions from its own host.
   'tikwm.com',
+  // The YouTube resolver of last resort prepares a file on its own storage, on a
+  // per-job subdomain (logan14.savenow.to and siblings), so the suffix is what
+  // can be allowed rather than any fixed hostname. See lib/youtube-api.ts.
+  'savenow.to',
 ];
 
 export interface UrlCheck {
