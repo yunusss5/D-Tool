@@ -172,11 +172,107 @@ async function cobalt(videoId: string): Promise<Trial[]> {
   );
 }
 
+/* ------------------------------ one own ask ------------------------------ */
+
+const PLAYER = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
+const VISITOR = 'https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false';
+const VISIONOS_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+
+async function mintVisitor(): Promise<string | undefined> {
+  const body = await json<{ responseContext?: { visitorData?: string } }>(VISITOR).catch(() => undefined);
+  if (body?.responseContext?.visitorData) return body.responseContext.visitorData;
+  try {
+    const response = await fetchWithTimeout(VISITOR, {
+      method: 'POST',
+      timeoutMs: 8_000,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-YouTube-Client-Name': '1',
+        'X-YouTube-Client-Version': '2.20240726.00.00',
+      },
+      body: JSON.stringify({
+        context: { client: { clientName: 'WEB', clientVersion: '2.20240726.00.00', hl: 'en', gl: 'US' } },
+      }),
+    });
+    if (!response.ok) return undefined;
+    const json2 = (await response.json()) as { responseContext?: { visitorData?: string } };
+    return json2.responseContext?.visitorData;
+  } catch {
+    return undefined;
+  }
+}
+
+async function askVisionOs(videoId: string, visitor: string | undefined) {
+  const client = {
+    clientName: 'VISIONOS',
+    clientVersion: '1.02',
+    deviceMake: 'Apple',
+    deviceModel: 'RealityDevice17,1',
+    osName: 'visionOS',
+    osVersion: '26.5.23O471',
+    hl: 'en',
+    gl: 'US',
+    utcOffsetMinutes: 0,
+    ...(visitor ? { visitorData: visitor } : {}),
+  };
+  try {
+    const response = await fetchWithTimeout(PLAYER, {
+      method: 'POST',
+      timeoutMs: 15_000,
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': VISIONOS_UA,
+        'X-YouTube-Client-Name': '101',
+        'X-YouTube-Client-Version': '1.02',
+        Origin: 'https://www.youtube.com',
+        Accept: '*/*',
+        ...(visitor ? { 'X-Goog-Visitor-Id': visitor } : {}),
+      },
+      body: JSON.stringify({
+        videoId,
+        context: { client, user: { lockedSafetyMode: false }, request: { useSsl: true } },
+        contentCheckOk: true,
+        racyCheckOk: true,
+      }),
+    });
+    if (!response.ok) return { status: `HTTP_${response.status}`, formats: 0, visitor: Boolean(visitor) };
+    const body = (await response.json()) as {
+      playabilityStatus?: { status?: string };
+      streamingData?: { formats?: unknown[]; adaptiveFormats?: unknown[] };
+    };
+    return {
+      status: body.playabilityStatus?.status ?? 'NO_STATUS',
+      formats: (body.streamingData?.formats?.length ?? 0) + (body.streamingData?.adaptiveFormats?.length ?? 0),
+      visitor: Boolean(visitor),
+    };
+  } catch (error) {
+    return { status: `THREW_${(error as Error).name}`, formats: 0, visitor: Boolean(visitor) };
+  }
+}
+
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const videoId = params.get('id') || 'dQw4w9WgXcQ';
   const mode = params.get('m') || 'invidious';
   const started = Date.now();
+
+  if (mode === 'sample') {
+    // Vercel does not give a function a fixed egress address, so "is this host
+    // blocked" may really be "is *this instance's* address blocked". Report the
+    // address alongside the verdict so the two can be correlated over many calls.
+    const [ip, verdict] = await Promise.all([
+      json<{ ip?: string }>('https://api.ipify.org?format=json', 6_000).then((body) => body?.ip ?? '?'),
+      (async () => {
+        const visitor = await mintVisitor();
+        return askVisionOs(videoId, visitor);
+      })(),
+    ]);
+    return NextResponse.json(
+      { mode, videoId, region: process.env.VERCEL_REGION ?? 'local', ip, ...verdict, ms: Date.now() - started },
+      { headers: { 'Cache-Control': 'no-store' } }
+    );
+  }
 
   const trials =
     mode === 'invidious'
