@@ -226,13 +226,33 @@ conclusions worth keeping:
   challenged deployment — a trusted id does not launder an untrusted IP. That
   leaves `YT_COOKIE` (an account YouTube already trusts) and `YT_PROXY` (a
   different address), and nothing else.
+- **Identity rotation is not a lever.** Four strategies — one id shared across
+  clients, a fresh id per client, one id reused across six sequential asks, and a
+  new id per ask — returned `LOGIN_REQUIRED` **22 times out of 22**.
+- **The egress pool is tiny and all of it is blocked.** The function leaves from
+  `15.206.153.191` and `13.206.202.223`; 24 samples across the two were
+  `LOGIN_REQUIRED` **24/24**. There is no lucky address to retry into.
+- **A valid proof-of-origin token does not lift it.** This was the last code-level
+  lever, so it was built and measured rather than assumed: BotGuard runs fine on
+  Vercel (`bgutils-js` + `jsdom`, token minted at 168 chars in 1.2 s), and sending
+  it as `serviceIntegrityDimensions.poToken` still returned `LOGIN_REQUIRED` for
+  both VISIONOS and `WEB`. The same code on a residential address mints the same
+  token and gets `OK` with 23 formats — the token was never the missing piece. The
+  implementation was reverted afterwards: two dependencies and a BotGuard VM for
+  zero measured benefit is not worth carrying.
+- **A browser-side handshake is impossible.** Offloading the player call to the
+  visitor's own (residential) address would sidestep everything above, but
+  InnerTube answers **403** to any request carrying a foreign `Origin`, and
+  `Origin` is a header browsers refuse to let JavaScript set.
 - **Region hopping is not the lever it looks like.** Vercel functions egress from
   cloud ranges wherever they run, and Google challenges the range, not the city.
   `vercel.json` pins `bom1` for latency, not for reputation.
-- **Public resolvers are not a fallback here.** Invidious (8 instances: 401/403/
-  404/dead), Piped (5: one alive, 500 on retry) and cobalt (5: JWT-gated or dead)
-  were all measured. There is no credential-free third party left to lean on for
-  YouTube — unlike TikTok, where one does still work.
+- **Public resolvers are not a fallback here.** Invidious, Piped and cobalt were
+  swept twice, from each project's own instance list: `api.invidious.io` now
+  publishes only Yggdrasil (`.ygg`) hosts, and the Piped and cobalt lists are
+  unreachable from the function. Zero working instances for all three. There is no
+  credential-free third party left to lean on for YouTube — unlike TikTok, where
+  one does still work.
 
 If a host is challenged persistently, the env vars are the way out, in increasing
 order of effort: `YT_COOKIE` (a signed-in cookie — reliable, but ties downloads to

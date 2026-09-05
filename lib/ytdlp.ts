@@ -253,7 +253,7 @@ function describeFailure(stderr: string): ExtractError {
   }
   if (text.includes("not a bot") || text.includes('failed to extract any player response')) {
     return new ExtractError(
-      'YouTube is challenging this server right now. Wait a minute and try again.',
+      'YouTube is refusing requests from this server. Try again in a minute — if it keeps failing, this server’s address is blocked, not the video.',
       503
     );
   }

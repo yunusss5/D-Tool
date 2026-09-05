@@ -32,7 +32,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ExtractError } from './media';
 import { fetchWithTimeout, hasProxy } from './http';
-import { webPoToken } from './youtube-potoken';
 import type { YtDlpFormat, YtDlpInfo } from './ytdlp';
 
 const ORIGIN = 'https://www.youtube.com';
@@ -82,13 +81,6 @@ interface ClientProfile {
    * same itag.
    */
   gated?: boolean;
-  /**
-   * True when this client is pointless without a proof-of-origin token, so it is
-   * only asked once one has been minted. `WEB` is the only such client here: it
-   * refuses an anonymous server outright, and answers with a token — which makes
-   * it the one door left on a host whose address YouTube distrusts.
-   */
-  needsPoToken?: boolean;
 }
 
 /** Order matters: the first client to offer an itag is the one whose URL is used. */
@@ -164,26 +156,6 @@ const CLIENTS: ClientProfile[] = [
       utcOffsetMinutes: 0,
     },
     gated: true,
-  },
-  // Asked only once a proof-of-origin token exists, because without one it is the
-  // client that refuses an anonymous server most firmly. With one it is the only
-  // door that opens on an address YouTube has decided not to trust, so it is worth
-  // the extra round trip that minting costs.
-  {
-    id: 1,
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    context: {
-      clientName: 'WEB',
-      clientVersion: '2.20240726.00.00',
-      osName: 'Windows',
-      osVersion: '10.0',
-      platform: 'DESKTOP',
-      hl: 'en',
-      gl: 'US',
-      utcOffsetMinutes: 0,
-    },
-    needsPoToken: true,
   },
 ];
 
@@ -315,14 +287,8 @@ function rotateVisitor(): void {
   if (!PINNED_VISITOR) visitorCache = undefined;
 }
 
-async function callPlayer(
-  client: ClientProfile,
-  videoId: string,
-  poToken?: string
-): Promise<PlayerResponse | undefined> {
+async function callPlayer(client: ClientProfile, videoId: string): Promise<PlayerResponse | undefined> {
   const visitor = await visitorData();
-  if (client.needsPoToken && !poToken) return undefined;
-
   const body = {
     videoId,
     context: {
@@ -333,7 +299,6 @@ async function callPlayer(
     playbackContext: { contentPlaybackContext: { html5Preference: 'HTML5_PREF_WANTS' } },
     contentCheckOk: true,
     racyCheckOk: true,
-    ...(poToken ? { serviceIntegrityDimensions: { poToken } } : {}),
   };
 
   const response = await fetchWithTimeout(PLAYER, {
@@ -449,7 +414,10 @@ function playabilityError(response: PlayerResponse): { error: ExtractError; fata
 
   if (reason.includes("not a bot") || reason.includes('sign in to confirm')) {
     return {
-      error: new ExtractError('YouTube is challenging this server right now. Wait a minute and try again.', 503),
+      error: new ExtractError(
+        'YouTube is refusing requests from this server. Try again in a minute — if it keeps failing, this server’s address is blocked, not the video.',
+        503
+      ),
       fatal: false,
     };
   }
@@ -539,45 +507,18 @@ async function servesWholeFile(format: YtDlpFormat): Promise<boolean> {
  * which `ANDROID_VR` still serves and the others do not. That progressive stream
  * is what keeps the site useful on hosts where ffmpeg is unavailable.
  */
-/** Every listed client at once; the ones that threw or answered nothing drop out. */
-async function askAll(
-  clients: ClientProfile[],
-  videoId: string,
-  poToken: string | undefined
-): Promise<Answer[]> {
-  const settled = await Promise.allSettled(
-    clients.map((client) => callPlayer(client, videoId, poToken))
-  );
-  return settled
+async function askClients(videoId: string): Promise<Answer[]> {
+  const settled = await Promise.allSettled(CLIENTS.map((client) => callPlayer(client, videoId)));
+  const answers = settled
     .map((entry, index) => ({
-      client: clients[index],
+      client: CLIENTS[index],
       response: entry.status === 'fulfilled' ? entry.value : undefined,
     }))
     .filter((entry): entry is Answer => Boolean(entry.response));
-}
-
-async function askClients(videoId: string): Promise<Answer[]> {
-  const anonymous = CLIENTS.filter((client) => !client.needsPoToken);
-  const answers = await askAll(anonymous, videoId, undefined);
-
-  // Minting a token runs a BotGuard VM, which is the most expensive thing in this
-  // file, so it happens only when the anonymous round has nothing to show — on a
-  // host YouTube trusts, that is never. When the round *is* empty the address is
-  // the likely reason, and a token is the one credential that answers that check
-  // without an account, so every client is asked again carrying one.
-  const usable = answers.some((entry) => collectFormats(entry.response).length > 0);
-  const all = usable
-    ? answers
-    : await (async () => {
-        const token = await webPoToken(await visitorData());
-        if (!token) return answers;
-        const retried = await askAll(CLIENTS, videoId, token);
-        return retried.some((entry) => collectFormats(entry.response).length > 0) ? retried : answers;
-      })();
 
   return [
-    ...all.filter((entry) => !entry.client.gated),
-    ...all.filter((entry) => entry.client.gated),
+    ...answers.filter((entry) => !entry.client.gated),
+    ...answers.filter((entry) => entry.client.gated),
   ];
 }
 
