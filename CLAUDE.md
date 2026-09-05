@@ -79,6 +79,13 @@ breaks the install. Optional environment overrides:
 | `FFMPEG_PATH` | Path to an `ffmpeg` binary, used ahead of `ffmpeg-static` |
 | `YTDLP_PATH` | Path to a `yt-dlp` executable (optional fallback engine) |
 | `PYTHON_PATH` | Python interpreter used for `python -m yt_dlp` |
+| `YT_VISITOR_DATA` | A visitor id minted on a network YouTube trusts, used instead of minting one |
+| `YT_COOKIE` | A signed-in `Cookie` header; the SAPISIDHASH signature is derived from it |
+| `YT_PROXY` | HTTP(S) proxy for `youtube.com` and `googlevideo.com` traffic only |
+
+The last three exist for one situation, described under
+[Deploying to a datacenter](#deploying-to-a-datacenter). None of them is needed
+on a host YouTube already trusts, and `.env.example` explains how to obtain each.
 
 If ffmpeg cannot be resolved at all, YouTube degrades rather than breaks: it
 offers progressive streams plus clearly labelled video-only files. yt-dlp is
@@ -117,6 +124,8 @@ npm run dev
 - `POST /api/fetch` — `{ url, platform? }` → `MediaInfo`; auto-detects the platform
 - `POST /api/youtube` · `/api/instagram` · `/api/pinterest` · `/api/tiktok` ·
   `/api/twitter` — same payload, platform pinned
+- `GET /api/youtube?id=<videoId>` — per-client InnerTube diagnostics for the host
+  that serves it (see [Deploying to a datacenter](#deploying-to-a-datacenter))
 - `GET /api/download` — two modes:
   - `?url=<media>&filename=<name>&ref=<origin>` proxies a CDN file (host allowlist, Range passthrough)
   - `?src=yt&id=<videoId>&v=<fmt>[&a=<fmt>]&filename=<name>` re-resolves a YouTube format at click time and, when `a` is present, muxes video+audio through ffmpeg to a single MP4/WebM stream
@@ -140,15 +149,76 @@ npm run dev
     still returns a progressive (single-file) stream.
   - Clients are asked in parallel and ungated ones rank first, so a capped URL
     can never displace a good one for the same itag.
+  - Nothing else anonymous is worth adding: `TVHTML5`, `TVHTML5_SIMPLY_EMBEDDED_PLAYER`,
+    `WEB_EMBEDDED_PLAYER`, `WEB_CREATOR`, `IOS_MUSIC` and `IOS_UNPLUGGED` were all
+    measured returning `UNPLAYABLE`/`ERROR`/`LOGIN_REQUIRED` with zero formats.
 - **A visitor id is mandatory.** Without one, VISIONOS answers the first request
   and `LOGIN_REQUIRED` for every request after it. It comes from
-  `/youtubei/v1/visitor_id` and is cached for 6 hours.
+  `/youtubei/v1/visitor_id` and is cached for 6 hours. A failed mint is **never**
+  cached: caching one poisons a warm lambda for the whole TTL, which looks exactly
+  like a permanent bot challenge. If minting is refused, an id is generated
+  locally instead (protobuf `{1: <11 chars>, 5: <unix seconds>}`, base64url —
+  InnerTube accepts it), and a round that still comes back empty is retried once
+  against a rotated id.
 - Some uploads (certain "made for kids" videos) are `UNPLAYABLE` on every ungated
   client; they surface as a plain-language error rather than a download that dies
   part-way.
 - YouTube URLs are signed and expire, so the client only ever receives format
   ids. `/api/download` re-resolves them through a 5-minute in-process cache,
   which also means a stale tab still downloads correctly.
+- **The last answer that resolved is kept for 90 minutes as a fallback.** A
+  challenge arrives in bursts, so on a distrusted host the request *after* a
+  success is often the one refused — which would break the click on a listing
+  that had just loaded. Signatures outlive that window by hours, so a failed
+  resolve replays the remembered answer instead of erroring. Re-resolution is
+  still attempted on every call, and `refresh: true` (the mid-transfer repair)
+  never accepts the fallback, since replaying the URL it distrusts is the one
+  thing that cannot help it.
+
+### Deploying to a datacenter
+
+Everything above is about *which client* to ask. Whether YouTube answers at all
+also depends on *where the request comes from*, and that is not something the code
+can choose: reputation is scored per IP, every serverless host is a datacenter
+address, and Google challenges those far more readily than a home connection. The
+symptom is `/api/fetch` returning **503 "YouTube is challenging this server right
+now"** in production while the identical build works locally. It is not a
+regression — it is the address.
+
+`GET /api/youtube?id=<videoId>` answers the only question worth asking first: what
+does *this* host actually get back? It reports each client's `playabilityStatus`,
+how many formats it offered, and whether its largest URL reads past the 1 MiB
+proof-of-origin wall. Statuses and counts only — no media URLs, no credentials.
+
+```bash
+curl -s 'https://<your-app>/api/youtube?id=dQw4w9WgXcQ'
+```
+
+What the code does about it, with no configuration:
+
+- **A failed visitor mint is never cached.** Caching `undefined` for six hours is
+  how one blocked request at a cold start takes a whole deployment down until the
+  instance recycles. There is also always *some* identity — a locally generated
+  one (protobuf `{1: <11 chars>, 5: <ts>}`, base64url) is accepted by InnerTube
+  and beats having none.
+- **A refusal is retried under a fresh identity.** The decision to challenge is
+  made against the pair (address, visitor id) and only the address is fixed, so
+  the whole round runs again with a new id before anything is reported. A verdict
+  a new identity cannot change — private, removed, members-only, age-gated — is
+  returned immediately instead.
+- **Gated clients are probed before use.** `ANDROID` and `IOS` may answer when the
+  ungated pair is challenged, but their URLs can stop at 1 MiB. One ranged request
+  two bytes past the wall decides whether their formats are offered at all, so a
+  challenged host degrades to fewer options rather than to downloads that die a
+  megabyte in.
+
+If a host is challenged persistently, those three env vars are the way out, in
+increasing order of effort: `YT_VISITOR_DATA` (an id minted on a trusted network,
+no account), `YT_COOKIE` (a signed-in cookie — reliable, but ties downloads to
+that account, so use a throwaway), `YT_PROXY` (moves both the handshake and the
+media reads off the host's address; the most reliable). Changing the deployment
+region is worth trying before any of them, since reputation varies sharply
+between them — on Vercel that is Project → Settings → Functions → Region.
 
 ### Downloading
 

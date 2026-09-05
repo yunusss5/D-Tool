@@ -2,6 +2,60 @@ import { BROWSER_UA, formatBytes, type FormatOption } from '@/lib/media';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
+/**
+ * Optional egress proxy for YouTube's own hosts.
+ *
+ * YouTube scores IP reputation, and every serverless host is a datacenter
+ * address, so the same code that sails through from a home connection gets
+ * bot-challenged from Vercel. Pointing `YT_PROXY` at any HTTP(S) proxy moves the
+ * handshake — and the media reads, since a signed URL can be tied to the address
+ * that asked for it — off the host's own address. It is the only fix for a
+ * challenged host that needs no YouTube account.
+ */
+const PROXY_HOSTS = /(^|\.)(youtube\.com|youtubei\.googleapis\.com|googlevideo\.com)$/i;
+
+type ProxiedFetch = { call: typeof globalThis.fetch; dispatcher: unknown };
+let proxyAgent: Promise<ProxiedFetch | null> | undefined;
+
+function proxyFor(url: string): Promise<ProxiedFetch | null> | null {
+  const target = process.env.YT_PROXY?.trim();
+  if (!target) return null;
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  if (!PROXY_HOSTS.test(host)) return null;
+
+  // undici's own fetch, not the global one: the agent and the client have to come
+  // from the same copy of undici for the dispatcher to be understood.
+  proxyAgent ??= import('undici')
+    .then((undici) => ({
+      call: undici.fetch as unknown as typeof globalThis.fetch,
+      dispatcher: new undici.ProxyAgent(target),
+    }))
+    .catch((error) => {
+      console.warn('[http] YT_PROXY is set but no proxy agent could be built:', error);
+      return null;
+    });
+  return proxyAgent;
+}
+
+/** True when a proxy is configured, for the diagnostics endpoint to report. */
+export const hasProxy = (): boolean => Boolean(process.env.YT_PROXY?.trim());
+
+/**
+ * `fetch`, routed through `YT_PROXY` when one is set and the target is a
+ * YouTube-owned host. Everything else goes out directly, unchanged.
+ */
+export async function mediaFetch(url: string, init?: RequestInit): Promise<Response> {
+  const via = proxyFor(url);
+  const proxied = via ? await via : null;
+  if (!proxied) return fetch(url, init);
+  return proxied.call(url, { ...init, dispatcher: proxied.dispatcher } as RequestInit);
+}
+
 export interface FetchOptions {
   headers?: Record<string, string>;
   method?: string;
@@ -15,7 +69,7 @@ export async function fetchWithTimeout(url: string, options: FetchOptions = {}):
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
-    return await fetch(url, {
+    return await mediaFetch(url, {
       method: options.method ?? 'GET',
       body: options.body,
       redirect: options.redirect ?? 'follow',

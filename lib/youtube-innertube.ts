@@ -18,13 +18,56 @@
  *
  * A visitor id is not optional here. Without one, VISIONOS answers the first
  * request and then `LOGIN_REQUIRED` for every request after it.
+ *
+ * The last thing to know is that none of this is decided by the code alone.
+ * YouTube scores the *address* the call comes from, and every serverless host is
+ * a datacenter address, so a deployment can be challenged where a laptop on a
+ * home connection is not. Three things follow, and all three are implemented
+ * below: never let one refusal be the final answer (rounds are retried under a
+ * fresh identity), never offer a format that cannot actually be read to the end
+ * (gated clients are probed past the 1 MiB wall before their formats are used),
+ * and give the operator a way out — `YT_VISITOR_DATA`, `YT_COOKIE` and
+ * `YT_PROXY`, in increasing order of effort.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import { ExtractError } from './media';
-import { fetchWithTimeout } from './http';
+import { fetchWithTimeout, hasProxy } from './http';
 import type { YtDlpFormat, YtDlpInfo } from './ytdlp';
 
+const ORIGIN = 'https://www.youtube.com';
 const PLAYER = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
 const VISITOR = 'https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false';
+
+/**
+ * A visitor id minted on a network YouTube trusts. Pinning one is the cheapest
+ * repair for a challenged host: it carries the history that a freshly minted id
+ * on a datacenter address does not.
+ */
+const PINNED_VISITOR = process.env.YT_VISITOR_DATA?.trim() || undefined;
+
+/**
+ * A signed-in cookie header, as copied from a browser. Deployments that Google
+ * refuses to trust anonymously work with one, at the cost of tying downloads to
+ * that account — so it stays opt-in and is never required.
+ */
+const COOKIE = process.env.YT_COOKIE?.trim() || undefined;
+
+/**
+ * A cookie on its own is ignored: InnerTube wants the SAPISIDHASH signature
+ * YouTube's own web client derives from it, or it treats the call as anonymous.
+ */
+function cookieHeaders(): Record<string, string> {
+  if (!COOKIE) return {};
+  const headers: Record<string, string> = { Cookie: COOKIE, 'X-Origin': ORIGIN };
+  const sapisid = /(?:^|;\s*)(?:__Secure-3PAPISID|SAPISID)=([^;]+)/.exec(COOKIE)?.[1];
+  if (sapisid) {
+    const at = Math.floor(Date.now() / 1000);
+    const digest = createHash('sha1').update(`${at} ${sapisid} ${ORIGIN}`).digest('hex');
+    headers.Authorization = `SAPISIDHASH ${at}_${digest}`;
+    headers['X-Goog-AuthUser'] = '0';
+  }
+  return headers;
+}
 
 interface ClientProfile {
   /** Numeric id InnerTube expects in X-YouTube-Client-Name. */
@@ -91,6 +134,29 @@ const CLIENTS: ClientProfile[] = [
       utcOffsetMinutes: 0,
     },
   },
+  // Last resort for a host the ungated pair refuses to serve. ANDROID answers
+  // when VISIONOS is challenged, but it is proof-of-origin gated, so its formats
+  // are only used when nothing better covers the itag *and* a probe confirms the
+  // URL reads past the 1 MiB wall — see servesWholeFile. (The YouTube TV client,
+  // ANDROID_UNPLUGGED, is not here on purpose: it answers "Please sign in" to
+  // every anonymous call, so it would only cost a round trip.)
+  {
+    id: 3,
+    userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; en_US; Pixel 8) gzip',
+    context: {
+      clientName: 'ANDROID',
+      clientVersion: '20.10.38',
+      deviceMake: 'Google',
+      deviceModel: 'Pixel 8',
+      androidSdkVersion: 34,
+      osName: 'Android',
+      osVersion: '14',
+      hl: 'en',
+      gl: 'US',
+      utcOffsetMinutes: 0,
+    },
+    gated: true,
+  },
 ];
 
 interface InnerTubeFormat {
@@ -141,40 +207,84 @@ interface PlayerResponse {
 }
 
 /**
- * A visitor identity makes the call look like a returning app install rather
- * than a brand new one, which keeps YouTube from challenging it as quickly.
- * One token is enough for the life of the process.
+ * Visitor identity.
+ *
+ * A visitor id makes the call look like a returning app install rather than a
+ * brand new one, and without one VISIONOS answers a single request and then
+ * `LOGIN_REQUIRED` for everything after it. Three rules follow from how much
+ * rests on it:
+ *
+ * - A failed mint must never be cached. Caching `undefined` for six hours is how
+ *   one blocked request at a cold start takes a whole deployment down until the
+ *   instance recycles, which is exactly what a challenged host does to itself.
+ * - There must always be *some* id. InnerTube accepts a locally generated one —
+ *   it simply carries no history — and that is far better than none at all.
+ * - It must be replaceable, because reputation attaches to the id as well as to
+ *   the address, so a challenged round is worth retrying under a new one.
  */
-let visitorCache: { at: number; value: Promise<string | undefined> } | undefined;
 const VISITOR_TTL = 6 * 60 * 60_000;
+let visitorCache: { at: number; value: Promise<string> } | undefined;
+let visitorOrigin: 'pinned' | 'minted' | 'generated' = PINNED_VISITOR ? 'pinned' : 'minted';
 
-function visitorData(): Promise<string | undefined> {
+/** InnerTube's own encoding: protobuf `{ 1: <11-char id>, 5: <unix seconds> }`, base64url. */
+function generateVisitorData(): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const id = Array.from(randomBytes(11), (byte) => alphabet[byte % alphabet.length]).join('');
+  const varint: number[] = [];
+  let seconds = Math.floor(Date.now() / 1000) - Math.floor(Math.random() * 600_000);
+  while (seconds > 0x7f) {
+    varint.push((seconds & 0x7f) | 0x80);
+    seconds >>>= 7;
+  }
+  varint.push(seconds);
+  const bytes = [0x0a, 0x0b, ...Buffer.from(id, 'ascii'), 0x28, ...varint];
+  return Buffer.from(Uint8Array.from(bytes)).toString('base64url');
+}
+
+/** Never rejects: a generated id is the floor, so callers always have one. */
+async function mintVisitorData(): Promise<string> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(VISITOR, {
+        method: 'POST',
+        timeoutMs: 10_000,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-YouTube-Client-Name': '1',
+          'X-YouTube-Client-Version': '2.20240726.00.00',
+          ...cookieHeaders(),
+        },
+        body: JSON.stringify({
+          context: { client: { clientName: 'WEB', clientVersion: '2.20240726.00.00', hl: 'en', gl: 'US' } },
+        }),
+      });
+      if (response.ok) {
+        const json = (await response.json()) as { responseContext?: { visitorData?: string } };
+        if (json.responseContext?.visitorData) {
+          visitorOrigin = 'minted';
+          return json.responseContext.visitorData;
+        }
+      }
+    } catch {
+      /* fall through to the next attempt, then to a generated id */
+    }
+  }
+  visitorOrigin = 'generated';
+  return generateVisitorData();
+}
+
+function visitorData(): Promise<string> {
+  if (PINNED_VISITOR) return Promise.resolve(PINNED_VISITOR);
   const now = Date.now();
   if (!visitorCache || now - visitorCache.at > VISITOR_TTL) {
-    const value = (async () => {
-      try {
-        const response = await fetchWithTimeout(VISITOR, {
-          method: 'POST',
-          timeoutMs: 10_000,
-          headers: {
-            'Content-Type': 'application/json',
-            'X-YouTube-Client-Name': '1',
-            'X-YouTube-Client-Version': '2.20240726.00.00',
-          },
-          body: JSON.stringify({
-            context: { client: { clientName: 'WEB', clientVersion: '2.20240726.00.00', hl: 'en', gl: 'US' } },
-          }),
-        });
-        if (!response.ok) return undefined;
-        const json = (await response.json()) as { responseContext?: { visitorData?: string } };
-        return json.responseContext?.visitorData || undefined;
-      } catch {
-        return undefined;
-      }
-    })().catch(() => undefined);
-    visitorCache = { at: now, value };
+    visitorCache = { at: now, value: mintVisitorData() };
   }
   return visitorCache.value;
+}
+
+/** Drop the current identity so the next call starts a fresh one. */
+function rotateVisitor(): void {
+  if (!PINNED_VISITOR) visitorCache = undefined;
 }
 
 async function callPlayer(client: ClientProfile, videoId: string): Promise<PlayerResponse | undefined> {
@@ -182,7 +292,7 @@ async function callPlayer(client: ClientProfile, videoId: string): Promise<Playe
   const body = {
     videoId,
     context: {
-      client: { ...client.context, ...(visitor ? { visitorData: visitor } : {}) },
+      client: { ...client.context, visitorData: visitor },
       user: { lockedSafetyMode: false },
       request: { useSsl: true, internalExperimentFlags: [] },
     },
@@ -200,9 +310,10 @@ async function callPlayer(client: ClientProfile, videoId: string): Promise<Playe
       'User-Agent': client.userAgent,
       'X-YouTube-Client-Name': String(client.id),
       'X-YouTube-Client-Version': String(client.context.clientVersion),
-      Origin: 'https://www.youtube.com',
+      Origin: ORIGIN,
       Accept: '*/*',
-      ...(visitor ? { 'X-Goog-Visitor-Id': visitor } : {}),
+      'X-Goog-Visitor-Id': visitor,
+      ...cookieHeaders(),
     },
   });
 
@@ -352,59 +463,131 @@ export interface InnerTubeResult {
   fatal?: boolean;
 }
 
+/** googlevideo serves exactly this much of a PO-token-gated URL, then 403s forever. */
+const GATED_CAP = 1_048_576;
+
+interface Answer {
+  client: ClientProfile;
+  response: PlayerResponse;
+}
+
 /**
- * Ask every client at once and keep the best answer.
+ * Does this URL actually read past the 1 MiB wall?
+ *
+ * Two bytes over the line is enough to know, so the question is cheap to ask —
+ * and asking it is what makes the gated clients usable as a fallback at all. A
+ * format that would die a megabyte into the download gets dropped here instead
+ * of being offered and failing in front of the visitor. Files that fit inside
+ * the cap need no probe: there is no wall in front of them.
+ */
+async function servesWholeFile(format: YtDlpFormat): Promise<boolean> {
+  if (!format.url) return false;
+  if (format.filesize && format.filesize <= GATED_CAP) return true;
+  try {
+    const response = await fetchWithTimeout(format.url, {
+      timeoutMs: 8_000,
+      headers: { Range: `bytes=${GATED_CAP}-${GATED_CAP + 1}` },
+    });
+    void response.body?.cancel();
+    return response.status === 206;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ask every client at once, ungated answers first.
  *
  * Running them in parallel costs no extra wall-clock time and buys two things:
- * resilience, because a client that is being bot-challenged this minute simply
+ * resilience, because a client being bot-challenged this minute simply
  * contributes nothing, and a progressive (single-file, has-audio) rendition,
  * which `ANDROID_VR` still serves and the others do not. That progressive stream
  * is what keeps the site useful on hosts where ffmpeg is unavailable.
- *
- * Where two clients offer the same itag, the ungated URL wins — a gated one
- * would download its first megabyte and then fail, which is worse than not
- * offering the format at all.
  */
-export async function innertubeInfo(videoId: string): Promise<InnerTubeResult> {
+async function askClients(videoId: string): Promise<Answer[]> {
   const settled = await Promise.allSettled(CLIENTS.map((client) => callPlayer(client, videoId)));
   const answers = settled
     .map((entry, index) => ({
       client: CLIENTS[index],
       response: entry.status === 'fulfilled' ? entry.value : undefined,
     }))
-    .filter((entry): entry is { client: ClientProfile; response: PlayerResponse } =>
-      Boolean(entry.response)
-    );
+    .filter((entry): entry is Answer => Boolean(entry.response));
 
-  if (answers.length === 0) {
-    return { error: new ExtractError('YouTube did not answer this server. Please try again.', 502) };
-  }
-
-  const ranked = [
+  return [
     ...answers.filter((entry) => !entry.client.gated),
     ...answers.filter((entry) => entry.client.gated),
   ];
+}
 
+/**
+ * Merge the answers into one format list, best URL per itag.
+ *
+ * Where two clients offer the same itag the ungated URL wins outright. A gated
+ * client is only reached for itags nothing else covers, and then only if the
+ * probe says its URLs read to the end — one probe per client, since the cap is
+ * applied to the session rather than to individual renditions.
+ */
+async function mergeFormats(ranked: Answer[]): Promise<{
+  formats: YtDlpFormat[];
+  details: PlayerResponse['videoDetails'] | undefined;
+}> {
   const formats: YtDlpFormat[] = [];
   const seen = new Set<string>();
   let details: PlayerResponse['videoDetails'] | undefined;
 
-  for (const { response } of ranked) {
-    if (response.playabilityStatus?.status && response.playabilityStatus.status !== 'OK') continue;
+  for (const { client, response } of ranked) {
+    const status = response.playabilityStatus?.status;
+    if (status && status !== 'OK') continue;
     details ??= response.videoDetails;
-    for (const format of collectFormats(response)) {
-      if (seen.has(format.format_id)) continue;
+
+    const fresh = collectFormats(response).filter((format) => !seen.has(format.format_id));
+    if (!fresh.length) continue;
+    if (client.gated) {
+      // Probe the largest rendition: the biggest file is the one most likely to
+      // be sitting behind the wall, so its answer is the least ambiguous.
+      const widest = fresh.reduce((a, b) => ((b.filesize ?? 0) > (a.filesize ?? 0) ? b : a));
+      if (!(await servesWholeFile(widest))) continue;
+    }
+    for (const format of fresh) {
       seen.add(format.format_id);
       formats.push(format);
     }
   }
 
+  return { formats, details };
+}
+
+/** One pass over every client under the current visitor identity. */
+async function oneRound(videoId: string): Promise<InnerTubeResult> {
+  const ranked = await askClients(videoId);
+  if (ranked.length === 0) {
+    return { error: new ExtractError('YouTube did not answer this server. Please try again.', 502) };
+  }
+
+  const { formats, details } = await mergeFormats(ranked);
+
   if (formats.length === 0) {
-    for (const { response } of ranked) {
-      const failure = playabilityError(response);
-      if (failure) return { error: failure.error, fatal: failure.fatal };
-    }
-    return { error: new ExtractError('No downloadable streams were found for that video.', 422) };
+    // What each client said, in the server log: on a challenged host this is the
+    // only place the difference between "we are being bot-checked" and "this
+    // video is genuinely unavailable" can be seen.
+    console.warn(
+      `[youtube] no usable formats for ${videoId} —`,
+      ranked
+        .map(
+          ({ client, response }) =>
+            `${client.context.clientName}=${response.playabilityStatus?.status ?? 'NO_STATUS'}`
+        )
+        .join(' ')
+    );
+    const failures = ranked
+      .map(({ response }) => playabilityError(response))
+      .filter((failure): failure is { error: ExtractError; fatal: boolean } => Boolean(failure));
+    // A permanent, specific diagnosis beats a transient one: "members-only" tells
+    // the visitor something true where "we are being challenged" would not.
+    const chosen = failures.find((failure) => failure.fatal) ?? failures[0];
+    return chosen
+      ? { error: chosen.error, fatal: chosen.fatal }
+      : { error: new ExtractError('No downloadable streams were found for that video.', 422) };
   }
 
   const thumbnails = details?.thumbnail?.thumbnails ?? [];
@@ -431,5 +614,91 @@ export async function innertubeInfo(videoId: string): Promise<InnerTubeResult> {
       live_status: details?.isLive ? 'is_live' : details?.isUpcoming ? 'is_upcoming' : 'not_live',
       formats,
     },
+  };
+}
+
+/**
+ * Resolve a video, retrying the whole round under a fresh identity.
+ *
+ * One refusal is not an answer. YouTube's decision to challenge a caller is made
+ * against the pair (address, visitor id), and only one half of that is fixed for
+ * a deployment — so when every client comes back empty, dropping the identity and
+ * asking again costs about a second and routinely turns a 503 into a download. A
+ * verdict that a new identity cannot change (private, removed, members-only,
+ * age-gated) is returned immediately instead.
+ */
+export async function innertubeInfo(videoId: string): Promise<InnerTubeResult> {
+  let last: InnerTubeResult = {};
+
+  for (let round = 0; round < 2; round += 1) {
+    if (round > 0) {
+      rotateVisitor();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    last = await oneRound(videoId);
+    if (last.info || last.fatal) return last;
+  }
+
+  return last;
+}
+
+export interface InnerTubeDiagnostics {
+  videoId: string;
+  /** Where the identity came from: an env pin, YouTube's mint, or generated locally. */
+  visitor: 'pinned' | 'minted' | 'generated';
+  /** Whether the escape hatches are configured. Never the values themselves. */
+  cookie: boolean;
+  proxy: boolean;
+  clients: Array<{
+    client: string;
+    status: string;
+    reason?: string;
+    formats: number;
+    gated: boolean;
+    /** Whether the largest rendition reads past the 1 MiB proof-of-origin wall. */
+    reach?: 'full' | 'capped';
+  }>;
+  usableFormats: number;
+}
+
+/**
+ * What this particular host gets back from InnerTube, one line per client.
+ *
+ * Working locally proves nothing about a deployment, because the address is the
+ * variable that matters, so this exists to be called against the deployed URL —
+ * it turns "YouTube is challenging this server" into the specific client statuses
+ * behind it. Statuses and counts only: no media URLs, no cookie, no identity.
+ */
+export async function innertubeDiagnostics(videoId: string): Promise<InnerTubeDiagnostics> {
+  await visitorData();
+  const ranked = await askClients(videoId);
+
+  const clients = await Promise.all(
+    ranked.map(async ({ client, response }) => {
+      const formats = collectFormats(response);
+      const widest = formats.length
+        ? formats.reduce((a, b) => ((b.filesize ?? 0) > (a.filesize ?? 0) ? b : a))
+        : undefined;
+      const reach = widest ? ((await servesWholeFile(widest)) ? 'full' : 'capped') : undefined;
+      return {
+        client: String(client.context.clientName),
+        status: response.playabilityStatus?.status ?? 'NO_STATUS',
+        reason: response.playabilityStatus?.reason?.slice(0, 160),
+        formats: formats.length,
+        gated: Boolean(client.gated),
+        reach: reach as 'full' | 'capped' | undefined,
+      };
+    })
+  );
+
+  const { formats } = await mergeFormats(ranked);
+
+  return {
+    videoId,
+    visitor: visitorOrigin,
+    cookie: Boolean(COOKIE),
+    proxy: hasProxy(),
+    clients,
+    usableFormats: formats.length,
   };
 }

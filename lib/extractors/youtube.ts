@@ -65,6 +65,23 @@ const infoCache = new Map<string, CacheEntry>();
 const CACHE_TTL = 5 * 60_000;
 
 /**
+ * The last answer that resolved for a video, kept well past `CACHE_TTL` purely as
+ * a safety net.
+ *
+ * YouTube challenges a datacenter address in bursts rather than steadily, so on a
+ * host it distrusts the request *after* a success is often the one that gets
+ * refused — which would otherwise break the click on a listing that had just
+ * loaded. googlevideo signatures outlive this window by hours, so replaying the
+ * last good answer is strictly better than failing a download that would have
+ * worked. Fresh resolution is still attempted every single time; this is only
+ * consulted when that attempt fails.
+ */
+const lastGood = new Map<string, { at: number; info: YtDlpInfo }>();
+const STALE_TTL = 90 * 60_000;
+/** Ceiling on the safety net, so a busy server cannot grow it without bound. */
+const STALE_MAX = 256;
+
+/**
  * InnerTube first, yt-dlp second. A refusal that no engine can work around
  * (private, removed, age-gated) is reported straight away rather than spending
  * seconds on a fallback that will land on the same wall.
@@ -90,10 +107,24 @@ async function resolveInfo(videoId: string): Promise<YtDlpInfo> {
   );
 }
 
+/** Resolve for real, and remember the answer as the fallback for this video. */
+async function resolveAndRemember(videoId: string): Promise<YtDlpInfo> {
+  const info = await resolveInfo(videoId);
+  if (lastGood.size >= STALE_MAX) {
+    const oldest = [...lastGood.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) lastGood.delete(oldest[0]);
+  }
+  lastGood.set(videoId, { at: Date.now(), info });
+  return info;
+}
+
 export function youtubeInfo(videoId: string, options?: { refresh?: boolean }): Promise<YtDlpInfo> {
   const now = Date.now();
   for (const [key, entry] of infoCache) {
     if (now - entry.at > CACHE_TTL) infoCache.delete(key);
+  }
+  for (const [key, entry] of lastGood) {
+    if (now - entry.at > STALE_TTL) lastGood.delete(key);
   }
 
   // `refresh` exists for one caller: the download proxy, when googlevideo starts
@@ -104,8 +135,14 @@ export function youtubeInfo(videoId: string, options?: { refresh?: boolean }): P
   const cached = infoCache.get(videoId);
   if (cached) return cached.info;
 
-  const info = resolveInfo(videoId).catch((error) => {
+  const info = resolveAndRemember(videoId).catch((error) => {
     infoCache.delete(videoId);
+    // A refusal now does not invalidate the URLs we already hold, so fall back to
+    // them. Never for a refresh, though: that caller is asking precisely because
+    // the answer it has stopped working, and handing the same one back would
+    // defeat the repair it is attempting.
+    const good = options?.refresh ? undefined : lastGood.get(videoId);
+    if (good && Date.now() - good.at <= STALE_TTL) return good.info;
     throw error;
   });
   infoCache.set(videoId, { at: now, info });

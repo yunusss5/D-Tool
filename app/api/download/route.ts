@@ -9,6 +9,7 @@ import type { ReadableStream as WebStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import { BROWSER_UA, ExtractError, formatBytes, sanitizeFilename } from '@/lib/media';
 import { checkProxyTarget, needsChunkedRange, refererFor } from '@/lib/allowed-hosts';
+import { mediaFetch } from '@/lib/http';
 import { clientKey, rateLimit } from '@/lib/rate-limit';
 import { youtubeInfo } from '@/lib/extractors/youtube';
 import { muxToStdout, type YtDlpFormat } from '@/lib/ytdlp';
@@ -216,7 +217,7 @@ async function chunkedRead(
 
       const to = total ? Math.min(total - 1, from + window - 1) : from + window - 1;
       try {
-        const response = await fetch(url, {
+        const response = await mediaFetch(url, {
           redirect: 'follow',
           cache: 'no-store',
           signal,
@@ -339,7 +340,7 @@ async function openMedia(
     if (chunked) return Readable.fromWeb(chunked.body as WebStream<Uint8Array>);
   }
 
-  const upstream = await fetch(url, { redirect: 'follow', cache: 'no-store', signal, headers });
+  const upstream = await mediaFetch(url, { redirect: 'follow', cache: 'no-store', signal, headers });
   if (!upstream.ok || !upstream.body) {
     await upstream.body?.cancel().catch(() => {});
     throw new ExtractError(
@@ -414,7 +415,7 @@ async function streamCdn(
     }
   }
 
-  const upstream = await fetch(check.url.toString(), {
+  const upstream = await mediaFetch(check.url.toString(), {
     redirect: 'follow',
     cache: 'no-store',
     signal: request.signal,
