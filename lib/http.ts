@@ -16,7 +16,8 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  * for the same reason: it is the fallback for a distrusted address, so it is no
  * use if it distrusts that address too.
  */
-const PROXY_HOSTS = /(^|\.)(youtube\.com|youtubei\.googleapis\.com|googlevideo\.com|savenow\.to)$/i;
+const PROXY_HOSTS =
+  /(^|\.)(youtube\.com|youtubei\.googleapis\.com|googlevideo\.com|savenow\.to|video-download-api\.com)$/i;
 
 type ProxiedFetch = { call: typeof globalThis.fetch; dispatcher: unknown };
 let proxyAgent: Promise<ProxiedFetch | null> | undefined;

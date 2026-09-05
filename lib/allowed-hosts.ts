@@ -41,6 +41,7 @@ const ALLOWED_HOST_SUFFIXES = [
   // per-job subdomain (logan14.savenow.to and siblings), so the suffix is what
   // can be allowed rather than any fixed hostname. See lib/youtube-api.ts.
   'savenow.to',
+  'video-download-api.com',
 ];
 
 export interface UrlCheck {

@@ -281,8 +281,31 @@ What is different about this path, and why the code looks the way it does:
 - **It is a job API, not a format list.** Submit `?format=<key>&url=<watch url>`,
   poll `?id=` until `progress == 1000`, then stream the `download_url` it returns.
   So sizes cannot be known before the job runs and the listing shows none — an
-  honest blank rather than a guess — and the fixed menu (2160p/1440p/1080p/720p/
-  480p/360p, m4a, mp3) replaces the itag-derived one.
+  honest blank rather than a guess — and a fixed menu replaces the itag-derived one.
+- **The free tier tops out at 480p, so the menu does too.** Accepting a format key
+  is not the same as rendering it. Measured 2026-09-05 on single keyless jobs: 360p
+  finished in 31 s early in the session and 117 s later, 480p in 39 s and mp3 in
+  34 s, while **720p returned an explicit `1000 Failed` on one run and sat on
+  `Initialising` for 200 s on another**. The tier also throttles under repeated use
+  — six parallel jobs left all six stuck at `Initialising`, and formats that had
+  just worked stalled once enough jobs had been submitted from the same address —
+  so "does 720p ever work with credit" is not something these probes can settle.
+  What they do settle is which keys completed unaided: 480p, 360p, m4a, mp3, and
+  that is the menu. A long menu that times out is worse than a short one that
+  delivers, and when the direct path works its own listing still offers 4K.
+- **A finished job and a hopeless one both report `progress: 1000`.** The number
+  cannot tell them apart — only the missing `download_url` and the word in `text`
+  can, so the poll ends on a `Failed`/`error` status rather than burning the whole
+  deadline. Each host gets its own submit *and* poll before the next is tried,
+  because a host that cannot render a quality does not refuse it: it accepts the
+  job and then stalls.
+- **A second click does not resume.** Measured: re-submitting the same video and
+  format starts over from `Initialising`, so the timeout message promises nothing
+  about kept work. The whole resolve is budgeted at 150 s rather than the route's
+  300 — a healthy tier finishes in 31–39 s, a throttled one never finishes at all,
+  and the difference between failing at 150 s and at 227 s is 77 seconds of
+  spinner. The first host may use all but 25 s of that; the alternates are spare
+  doors, not equals.
 - **Audio is merged upstream.** This path needs no ffmpeg and never offers a
   silent video file. Its format ids are prefixed `api-` so they can never collide
   with an itag.
@@ -295,6 +318,10 @@ What is different about this path, and why the code looks the way it does:
   retried anonymously rather than reported, because the free tier serves the same
   files, just slower and rate-limited. Verified end to end: keyed attempt logged
   `Not enough balance`, the keyless retry returned 17,584,186 bytes of 480p MP4.
+- **Which host answers moves around.** `video-download-api.com` answered from both
+  a home connection and the Vercel function; `p.savenow.to` failed to connect from
+  home on 2026-09-05 while answering the same probe from Vercel in 4.7 s. Both are
+  tried, site host first, and `GET /api/youtube` reports each one's verdict.
 - **It is somebody else's upstream.** The second one in this codebase, after
   `tikwm.com` for TikTok. If YouTube downloads break on a deployment that relies
   on this path, check whether the resolver is still up before anything else.
