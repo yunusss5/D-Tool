@@ -64,8 +64,6 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [selectedFormat, setSelectedFormat] = useState<FormatOption | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [downloaded, setDownloaded] = useState(0);
   const [copied, setCopied] = useState(false);
   const [detectedPlatform, setDetectedPlatform] = useState<Platform>('unknown');
 
@@ -100,8 +98,6 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
     setMediaInfo(null);
     setSelectedFormat(null);
     setError(null);
-    setProgress(0);
-    setDownloaded(0);
   };
 
   const handleCopy = async () => {
@@ -149,101 +145,18 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
     }
   };
 
-  const filenameFrom = (response: Response, fallback: string) => {
-    const header = response.headers.get('content-disposition') ?? '';
-    const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-    if (utf8) {
-      try {
-        return decodeURIComponent(utf8);
-      } catch {
-        /* fall back to the ascii name */
-      }
-    }
-    return header.match(/filename="([^"]+)"/i)?.[1] ?? fallback;
-  };
-
-  const handleDownload = async () => {
-    if (!selectedFormat || !mediaInfo) return;
-
-    // Buffering a multi-gigabyte file in a Blob would exhaust the tab, so large
-    // files go straight to the browser's own downloader instead.
-    if ((selectedFormat.bytes ?? 0) > 200 * 1024 ** 2) {
-      const anchor = document.createElement('a');
-      anchor.href = selectedFormat.downloadUrl;
-      anchor.rel = 'noopener';
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      return;
-    }
-
+  // ----- FIX: download directly via window.open (no fetch, no CORS) -----
+  const handleDownload = () => {
+    if (!selectedFormat) return;
     setIsDownloading(true);
-    setProgress(0);
-    setDownloaded(0);
-    setError(null);
-
-    try {
-      const response = await fetch(selectedFormat.downloadUrl);
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error ?? `Download failed (HTTP ${response.status})`);
-      }
-
-      const fallbackName = `${
-        mediaInfo.title.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_') || 'download'
-      }.${selectedFormat.format}`;
-      const filename = filenameFrom(response, fallbackName);
-
-      // Merged YouTube streams have no Content-Length — the server sends an
-      // estimate instead, and we fall back to a byte counter if there is none.
-      const exact = Number(response.headers.get('content-length') ?? 0);
-      const total = exact || Number(response.headers.get('x-media-bytes') ?? 0);
-
-      let blob: Blob;
-      if (response.body) {
-        const reader = response.body.getReader();
-        const chunks: BlobPart[] = [];
-        let received = 0;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value as unknown as BlobPart);
-          received += value.byteLength;
-          setDownloaded(received);
-          if (total > 0) setProgress(Math.min(99, Math.round((received / total) * 100)));
-        }
-        blob = new Blob(chunks, {
-          type: response.headers.get('content-type') ?? 'application/octet-stream',
-        });
-      } else {
-        blob = await response.blob();
-      }
-
-      setProgress(100);
-      const objectUrl = window.URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      setTimeout(() => window.URL.revokeObjectURL(objectUrl), 30_000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to download. Please try again.');
-    } finally {
-      setIsDownloading(false);
-    }
+    // Open the download URL in a new tab/window; the browser will follow the redirect
+    window.open(selectedFormat.downloadUrl, '_blank');
+    // Reset loading state after a moment (the download will continue in the background)
+    setTimeout(() => setIsDownloading(false), 1000);
   };
 
   const PlatformIcon =
     platformIcons[detectedPlatform !== 'unknown' ? detectedPlatform : locked ?? 'unknown'];
-
-  const downloadLabel = progress > 0
-    ? `Downloading ${progress}%`
-    : downloaded > 0
-      ? `Downloading ${(downloaded / 1024 ** 2).toFixed(1)} MB`
-      : 'Preparing download...';
 
   return (
     <section className="py-12 px-4 sm:px-6 lg:px-8">
@@ -438,7 +351,7 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
                   {isDownloading ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>{downloadLabel}</span>
+                      <span>Opening download…</span>
                     </>
                   ) : (
                     <>
@@ -447,18 +360,6 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
                     </>
                   )}
                 </button>
-
-                {isDownloading && (
-                  <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                    <div
-                      className={cn(
-                        'h-full rounded-full bg-red-600',
-                        progress > 0 ? 'transition-all duration-200' : 'animate-pulse'
-                      )}
-                      style={{ width: `${Math.max(4, progress)}%` }}
-                    />
-                  </div>
-                )}
 
                 <button
                   onClick={handleClear}
