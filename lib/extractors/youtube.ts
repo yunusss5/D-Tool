@@ -323,14 +323,54 @@ async function buildFormats(info: YtDlpInfo, videoId: string, title: string): Pr
 export async function extractYouTube(url: string): Promise<MediaInfo> {
   const videoId = youtubeVideoId(url);
 
+  // ─── VERCEL OPTIMISATION ────────────────────────────────────────────────
+  // On Vercel, we only support progressive streams (single file with audio).
+  // No ffmpeg, no slow resolver – we either serve instantly or fail fast.
+  if (process.env.VERCEL_URL) {
+    let info: YtDlpInfo;
+    try {
+      info = await youtubeInfo(videoId);
+    } catch {
+      throw new ExtractError(
+        'YouTube is not responding. Try a different video or use a lower quality.',
+        503
+      );
+    }
+
+    // Check if any progressive stream exists
+    const hasProgressive = (info.formats ?? []).some(
+      (f) => f.vcodec !== 'none' && f.acodec !== 'none'
+    );
+    if (!hasProgressive) {
+      throw new ExtractError(
+        'This video requires merging (not supported on this hosting platform). Please try a video that offers 720p or lower with audio.',
+        400
+      );
+    }
+
+    const title = info.title?.trim() || 'YouTube video';
+    const formats = await buildFormats(info, videoId, title);
+    if (!formats.length) {
+      throw new ExtractError('No downloadable stream offered.', 502);
+    }
+
+    return {
+      platform: 'youtube',
+      title,
+      thumbnail: info.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      duration: info.duration ? secondsToClock(Math.round(info.duration)) : undefined,
+      author: info.channel || info.uploader || undefined,
+      views: info.view_count ? formatViews(info.view_count) : undefined,
+      formats,
+    };
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ----- Original logic for non‑Vercel environments -----
   let info: YtDlpInfo;
   try {
     info = await youtubeInfo(videoId);
   } catch (error) {
-    // A challenge, a timeout or an empty answer means YouTube would not talk to
-    // *this address* — which the resolver in youtube-api.ts does not share. A
-    // verdict about the video itself (private, removed, members-only) travels
-    // with the video, so there is nothing to gain by asking somebody else.
     const transport =
       error instanceof ExtractError && (error.status === 502 || error.status === 503 || error.status === 504);
     if (!transport) throw error;

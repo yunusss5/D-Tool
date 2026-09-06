@@ -146,14 +146,14 @@ export function DownloadForm({ platform: locked, heading, subheading }: Download
   };
 
   // ----- FIX: download directly via window.open (no fetch, no CORS) -----
-  const handleDownload = () => {
-    if (!selectedFormat) return;
-    setIsDownloading(true);
-    // Open the download URL in a new tab/window; the browser will follow the redirect
-    window.open(selectedFormat.downloadUrl, '_blank');
-    // Reset loading state after a moment (the download will continue in the background)
-    setTimeout(() => setIsDownloading(false), 1000);
-  };
+const handleDownload = () => {
+  if (!selectedFormat) return;
+  setIsDownloading(true);
+  // Download in the same tab (navigates away)
+  window.location.href = selectedFormat.downloadUrl;
+  // Reset loading after a moment
+  setTimeout(() => setIsDownloading(false), 1000);
+};
 
   const PlatformIcon =
     platformIcons[detectedPlatform !== 'unknown' ? detectedPlatform : locked ?? 'unknown'];
