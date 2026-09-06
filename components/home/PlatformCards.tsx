@@ -1,82 +1,105 @@
+import { useState } from 'react';
 import Link from 'next/link';
-import { Youtube, Instagram, Image, Music2, Twitter } from 'lucide-react';
+import { Youtube, Instagram, Image, Music2, Twitter, ChevronDown } from 'lucide-react';
 
 const platforms = [
   {
     name: 'YouTube',
     description: 'Videos, Shorts, MP3 Audio',
     icon: Youtube,
-    color: 'hover:text-youtube',
+    color: 'text-youtube',
     href: '/youtube-downloader',
-    gradient: 'from-red-500/10 to-red-500/5',
-    borderColor: 'hover:border-youtube/30',
   },
   {
     name: 'Instagram',
     description: 'Reels, Posts, Stories',
     icon: Instagram,
-    color: 'hover:text-instagram',
+    color: 'text-instagram',
     href: '/instagram-downloader',
-    gradient: 'from-pink-500/10 to-pink-500/5',
-    borderColor: 'hover:border-instagram/30',
   },
   {
     name: 'Pinterest',
     description: 'Pins, Images, Videos',
     icon: Image,
-    color: 'hover:text-pinterest',
+    color: 'text-pinterest',
     href: '/pinterest-downloader',
-    gradient: 'from-red-600/10 to-red-600/5',
-    borderColor: 'hover:border-pinterest/30',
   },
   {
     name: 'TikTok',
     description: 'Videos, Photos, No Watermark',
     icon: Music2,
-    color: 'hover:text-tiktok',
+    color: 'text-tiktok',
     href: '/tiktok-downloader',
-    gradient: 'from-cyan-500/10 to-cyan-500/5',
-    borderColor: 'hover:border-tiktok/30',
   },
   {
     name: 'X (Twitter)',
     description: 'Videos, GIFs, Photos',
     icon: Twitter,
-    color: 'hover:text-twitter',
+    color: 'text-twitter',
     href: '/x-downloader',
-    gradient: 'from-sky-500/10 to-sky-500/5',
-    borderColor: 'hover:border-twitter/30',
   },
 ];
 
 export function PlatformCards() {
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  const toggleAccordion = (index: number) => {
+    setOpenIndex(openIndex === index ? null : index);
+  };
+
   return (
     <section className="py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-5xl mx-auto">
-        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-          {platforms.map((platform) => (
-            <Link
-              key={platform.name}
-              href={platform.href}
-              className={`group relative p-6 rounded-2xl bg-gradient-to-br ${platform.gradient} border border-transparent ${platform.borderColor} transition-all duration-300 hover:shadow-lg hover:scale-[1.02]`}
-            >
-              <div className="flex flex-col items-center text-center gap-3">
-                <div className={`p-3 rounded-xl bg-gray-100 dark:bg-gray-800 transition-transform group-hover:scale-110`}>
-                  <platform.icon className={`w-8 h-8 text-gray-600 dark:text-gray-400 ${platform.color}`} />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white">{platform.name}</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">{platform.description}</p>
+      <div className="max-w-3xl mx-auto">
+        <div className="space-y-3">
+          {platforms.map((platform, index) => {
+            const isOpen = openIndex === index;
+            const Icon = platform.icon;
+
+            return (
+              <div
+                key={platform.name}
+                className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden shadow-sm transition-all"
+              >
+                <button
+                  onClick={() => toggleAccordion(index)}
+                  className="w-full flex items-center justify-between p-4 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="p-2 rounded-lg bg-gray-100 dark:bg-gray-800">
+                      <Icon className={`w-6 h-6 ${platform.color}`} />
+                    </div>
+                    <span className="font-semibold text-gray-900 dark:text-white">
+                      {platform.name}
+                    </span>
+                  </div>
+                  <ChevronDown
+                    className={`w-5 h-5 text-gray-500 transition-transform duration-200 ${
+                      isOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                <div
+                  className={`overflow-hidden transition-all duration-300 ease-in-out ${
+                    isOpen ? 'max-h-40 opacity-100' : 'max-h-0 opacity-0'
+                  }`}
+                >
+                  <div className="p-4 pt-0 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700">
+                    <p className="text-gray-600 dark:text-gray-300 text-sm mb-3">
+                      {platform.description}
+                    </p>
+                    <Link
+                      href={platform.href}
+                      className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Visit {platform.name} Downloader
+                      <span aria-hidden="true">→</span>
+                    </Link>
+                  </div>
                 </div>
               </div>
-              {/* Hover arrow */}
-              <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>
