@@ -324,49 +324,57 @@ export async function extractYouTube(url: string): Promise<MediaInfo> {
   const videoId = youtubeVideoId(url);
 
   // ─── VERCEL OPTIMISATION ────────────────────────────────────────────────
-  // On Vercel, we only support progressive streams (single file with audio).
-  // No ffmpeg, no slow resolver – we either serve instantly or fail fast.
+  // On Vercel, we first try InnerTube (fast). If it fails or returns no
+  // progressive stream, we fallback to the resolver (which may be slower).
   if (process.env.VERCEL_URL) {
-    let info: YtDlpInfo;
+    let info: YtDlpInfo | undefined;
+    let useResolver = false;
+
     try {
       info = await youtubeInfo(videoId);
     } catch {
+      useResolver = true; // InnerTube failed – fallback to resolver
+    }
+
+    if (info && !useResolver) {
+      // Check if any progressive stream exists
+      const hasProgressive = (info.formats ?? []).some(
+        (f) => f.vcodec !== 'none' && f.acodec !== 'none'
+      );
+      if (hasProgressive) {
+        // Progressive found – serve instantly
+        const title = info.title?.trim() || 'YouTube video';
+        const formats = await buildFormats(info, videoId, title);
+        if (formats.length) {
+          return {
+            platform: 'youtube',
+            title,
+            thumbnail: info.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+            duration: info.duration ? secondsToClock(Math.round(info.duration)) : undefined,
+            author: info.channel || info.uploader || undefined,
+            views: info.view_count ? formatViews(info.view_count) : undefined,
+            formats,
+          };
+        }
+      }
+      // No progressive stream – fallback to resolver
+      useResolver = true;
+    }
+
+    // Either InnerTube failed or no progressive stream – use resolver
+    try {
+      return await apiYouTubeInfo(videoId);
+    } catch (resolverError) {
+      console.warn('[youtube] resolver fallback failed:', resolverError);
       throw new ExtractError(
-        'YouTube is not responding. Try a different video or use a lower quality.',
+        'This video cannot be downloaded on this platform. Please try a different video or quality.',
         503
       );
     }
-
-    // Check if any progressive stream exists
-    const hasProgressive = (info.formats ?? []).some(
-      (f) => f.vcodec !== 'none' && f.acodec !== 'none'
-    );
-    if (!hasProgressive) {
-      throw new ExtractError(
-        'This video requires merging (not supported on this hosting platform). Please try a video that offers 720p or lower with audio.',
-        400
-      );
-    }
-
-    const title = info.title?.trim() || 'YouTube video';
-    const formats = await buildFormats(info, videoId, title);
-    if (!formats.length) {
-      throw new ExtractError('No downloadable stream offered.', 502);
-    }
-
-    return {
-      platform: 'youtube',
-      title,
-      thumbnail: info.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-      duration: info.duration ? secondsToClock(Math.round(info.duration)) : undefined,
-      author: info.channel || info.uploader || undefined,
-      views: info.view_count ? formatViews(info.view_count) : undefined,
-      formats,
-    };
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  // ----- Original logic for non‑Vercel environments -----
+  // ----- Original logic for non‑Vercel environments (local) -----
   let info: YtDlpInfo;
   try {
     info = await youtubeInfo(videoId);
