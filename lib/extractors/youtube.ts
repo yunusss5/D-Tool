@@ -321,6 +321,15 @@ async function buildFormats(info: YtDlpInfo, videoId: string, title: string): Pr
 }
 
 export async function extractYouTube(url: string): Promise<MediaInfo> {
+  // ─── VERCEL FIX ────────────────────────────────────────────────────────────
+  // On Vercel we bypass all merging/ffmpeg and use the API resolver directly.
+  // The resolver returns already-merged formats (api-*) that work with a redirect.
+  if (process.env.VERCEL === '1') {
+    const videoId = youtubeVideoId(url);
+    return await apiYouTubeInfo(videoId);
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   const videoId = youtubeVideoId(url);
 
   let info: YtDlpInfo;

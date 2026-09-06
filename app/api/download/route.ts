@@ -451,6 +451,8 @@ async function streamCdn(
   return new NextResponse(upstream.body, { status: upstream.status, headers });
 }
 
+// ======================== VERCEL-FRIENDLY HANDLER ========================
+
 export async function GET(request: NextRequest) {
   const limit = rateLimit(`download:${clientKey(request)}`, 40, 60_000);
   if (!limit.ok) {
@@ -468,25 +470,50 @@ export async function GET(request: NextRequest) {
   );
 
   try {
+    // ---------- YouTube ----------
     if (params.get('src') === 'yt') {
       const videoId = params.get('id') ?? '';
       const video = params.get('v') ?? '';
+
       if (!videoId || !video) {
         return errorResponse('Missing YouTube id or format.', 400);
       }
-      // Formats from the third-party resolver are prepared on demand: the job
-      // runs now, and what comes back is a finished file on its own host, so it
-      // streams like any other CDN target rather than going through the muxer.
+
+      // ---- VERCEL DETECTION ----
+      const isVercel = process.env.VERCEL === '1';
+
+      // If the format is from the API resolver (api-*), resolve and redirect
       if (video.startsWith(API_PREFIX)) {
         const resolved = await apiResolve(videoId, video, request.signal);
-        return await streamCdn(request, resolved.url, filename);
+        // Redirect directly to the CDN URL to avoid proxying through Vercel
+        return new NextResponse(null, {
+          status: 302,
+          headers: {
+            Location: resolved.url,
+            // Optionally set Content-Disposition (browsers may ignore on redirect)
+            // but we keep it for informational purposes
+            'Content-Disposition': disposition(filename),
+          },
+        });
       }
+
+      // On Vercel, we do NOT support formats that require ffmpeg/merging
+      if (isVercel) {
+        return errorResponse(
+          'This format is not available on Vercel. Please choose one of the listed formats (e.g., 480p, 360p, Audio).',
+          400
+        );
+      }
+
+      // Local development: use the existing streaming/muxing logic
       return await streamYouTube(request, videoId, video, params.get('a'), filename);
     }
 
+    // ---------- Other platforms (Instagram, Pinterest, etc.) ----------
     const target = params.get('url');
     if (!target) return errorResponse('Nothing to download: no url supplied.', 400);
     return await streamCdn(request, target, filename, params.get('ref') ?? undefined);
+
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       return new NextResponse(null, { status: 499 });
