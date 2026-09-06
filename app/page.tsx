@@ -2,7 +2,6 @@ import { HeroSection } from '@/components/home/HeroSection';
 import { FeaturesSection } from '@/components/home/FeaturesSection';
 import { PlatformsSection } from '@/components/home/PlatformsSection';
 import { DownloadForm } from '@/components/download/DownloadForm';
-import { PlatformCards } from '@/components/home/PlatformCards';
 import { TestimonialsSection } from '@/components/home/TestimonialsSection';
 
 /**
@@ -20,7 +19,6 @@ export default function Home() {
       </div>
 
       <HeroSection />
-      <PlatformCards />
       <DownloadForm />
       <FeaturesSection />
       <PlatformsSection />
